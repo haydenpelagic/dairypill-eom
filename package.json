@@ -1,0 +1,10 @@
+{
+  "name": "dairypill-eom",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Google Apps Script that builds the DairyPill end-of-month inventory/COGS workbook. Tests run the pure logic in Node.",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "bundle": "node tools/bundle.js"
+  }
+}
