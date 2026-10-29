@@ -30,6 +30,16 @@ var CONFIG = {
     headers: { parent: 'Parent SKU', parentDesc: 'Parent Desc', child: 'Child SKU', childDesc: 'Child Desc', qty: 'Qty' }
   },
 
+  // ---- Rule 5.7: the Ops Hub work-order log the kit lines are written to ----
+  // Only the four columns below are written (found by their header in row 1);
+  // every other column (Description, Channel, Month formulas, the rate table) is left alone.
+  WO_LOG: {
+    enabled: true, // false = don't touch wo_log
+    spreadsheetId: '1rCXpffesBqnfocXslxqb9VzuFCQd60X5IV_YPZTkEtE', // DairyPill Ops Hub 2.0
+    sheetName: 'wo_log',
+    headers: { date: 'Date', qty: 'Quantity', sku: 'SKU', cost: 'Cost' } // columns A, B, C, G
+  },
+
   // ---- Rule 6.2 / 7.3: first-run source for COGS and Prepaid -----------------
   // Used only when there is no previous month's workbook to carry them from.
   BOOTSTRAP_WORKBOOK_ID: '1vFNFEbUKyoTlj21PrKWjk_2Yfdhionh7wkkSF2J3pAw', // Sept 2026 (hand-built)

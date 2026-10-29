@@ -24,6 +24,7 @@ No coding needed. You copy one file into Google Apps Script once; after that you
 1. In the toolbar dropdown next to **Debug**, choose **buildEOM** and click **Run**.
 2. Google asks for permission → **Review permissions** → pick your account → **Advanced** → **Go to DairyPill EOM (unsafe)** → **Allow**.
    ("Unsafe" just means Google hasn't reviewed a script you wrote yourself — normal for personal scripts.)
+3. The Google account that runs the script needs **edit** access to **DairyPill Ops Hub 2.0** — it reads the BOM there and writes the month's kit lines into the `wo_log` tab (rule 5.7).
 
 ---
 
@@ -46,6 +47,7 @@ No coding needed. You copy one file into Google Apps Script once; after that you
 
 3. In the script editor choose **buildEOM** → **Run**. It takes a few minutes. When it finishes, the **Execution log** at the bottom shows a link to the workbook.
 4. Open the workbook. It opens on the **Checks** tab — anything red (**FLAG**) needs attention.
+   The month's work orders are also written into the Ops Hub `wo_log` tab (Date, Quantity, SKU, Cost); the Checks tab says which rows. Don't type the month's ADS work orders into `wo_log` by hand any more — the run replaces that month's rows with the report.
 5. Fill in the **yellow tabs**:
    - **MFG Inventory** — one row per manufacturer and SKU: `MFG` (VitaQuest, VitaPros, …), `SKU`, `Received Qty`, `EOM Qty`.
    - **ADS Receipts** — `PO Number`, `SKU`, `Qty` received at ADS this month.

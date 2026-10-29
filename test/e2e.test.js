@@ -59,10 +59,20 @@ const parent = gas.root.createFolder('DairyPill EOM');
 const sep = parent.createFolder('September 2026');
 const rawSep = sampleRaw(2026, 8);
 putMonthFiles(sep, rawSep, { boot: true });
-gas.spreadsheetWithId(ctx.CONFIG.BOM_SOURCE.spreadsheetId, 'DairyPill Ops Hub 2.0', null, {
+const opsHub = gas.spreadsheetWithId(ctx.CONFIG.BOM_SOURCE.spreadsheetId, 'DairyPill Ops Hub 2.0', null, {
   Other: [['x']],
-  bom: rawSep.bomValues.map((r) => ['', '', '', ''].concat(r)) // the real tab is lower-case "bom"; data in E:I
+  bom: rawSep.bomValues.map((r) => ['', '', '', ''].concat(r)), // the real tab is lower-case "bom"; data in E:I
+  // Rule 5.7: A Date, B Quantity, C SKU, G Cost are written; D–F (formulas in the real tab) and the rate table in I:J are not.
+  wo_log: [
+    ['Date', 'Quantity', 'SKU', 'Description', 'Channel', 'Month', 'Cost', '', 'SKU', 'Sep 2026'],
+    ['2026-08-24', 200, '10030', 'd2', 'DTC', 'Aug', 0.54, '', 'Base Fee', 32],
+    ['2026-09-01', 999, '10090', 'd3', 'DTC', 'Sep', 0.54, '', '10030', 0.6], // typed by hand before the report came — replaced
+    ['2026-09-02', 1, '10180', 'd4', 'DTC', 'Sep', 0.54],
+    ['2026-10-02', 7, 'A0030', 'd5', 'Amazon', 'Oct', 0.38] // an October row already typed
+  ]
 });
+const woLog = () => opsHub.getSheetByName('wo_log').rawValues().map((r) => [r[0], r[1], r[2], r[6]]);
+const woLogSide = () => opsHub.getSheetByName('wo_log').rawValues().map((r) => r.slice(3, 6).concat(r.slice(7)));
 const cogsWithFormulas = [rawSep.cogsHeader].concat(rawSep.cogsRows.map((r, i) => ['=TRIM(B' + (i + 2) + ')'].concat(r.slice(1))));
 const bootWb = gas.spreadsheetWithId(ctx.CONFIG.BOOTSTRAP_WORKBOOK_ID, 'Sept hand-built', null, {
   COGS: cogsWithFormulas,
@@ -114,6 +124,25 @@ test('1. first run for September builds the full workbook', () => {
   assert.match(res('MFG Starting Balance filled in'), /^FLAG/);
   assert.match(checks.find((x) => x[1] === 'Starting balances came from')[3], /Starting Balances" subfolder \(first run\)/);
   assert.match(checks.find((x) => x[1] === 'Files in the folder that were ignored')[3], /notes\.pdf/);
+
+  // Rule 5.7: September's kit lines replaced the hand-typed September rows; October's row moved down
+  assert.deepEqual(woLog(), [
+    ['Date', 'Quantity', 'SKU', 'Cost'],
+    ['2026-08-24', 200, '10030', 0.54],
+    ['2026-09-03', 5, '10030', 0.54],
+    ['2026-09-15', 4, 'A0030', 0.38],
+    ['2026-09-16', 6, 'A0030', 0.38],
+    ['2026-10-02', 7, 'A0030', 0.38]
+  ]);
+  assert.deepEqual(woLogSide().slice(0, 5), [
+    ['Description', 'Channel', 'Month', '', 'SKU', 'Sep 2026'],
+    ['d2', 'DTC', 'Aug', '', 'Base Fee', 32],
+    ['d3', 'DTC', 'Sep', '', '10030', 0.6],
+    ['d4', 'DTC', 'Sep'],
+    ['d5', 'Amazon', 'Oct']
+  ], 'other columns untouched');
+  assert.equal(checks.find((x) => x[0] === '5.7')[3],
+    'Updated: rows 3–5 hold the 3 September 2026 kit lines (replaced 2 September 2026 rows that were there; rows dated after September 2026 moved to make room).');
 });
 
 test('2. typing MFG Inventory + ADS Receipts and running again keeps what you typed', () => {
@@ -142,6 +171,9 @@ test('2. typing MFG Inventory + ADS Receipts and running again keeps what you ty
   assert.equal(res('MFG Inventory filled in'), 'OK');
   assert.equal(res('SKUs with no COGS cost'), 'OK');
   assert.match(checks.find((x) => x[1] === 'Shopify data came from')[3], /reused/);
+  // Rule 5.7: running again never doubles the wo_log rows
+  assert.equal(woLog().length, 6);
+  assert.equal(checks.find((x) => x[0] === '5.7')[3], 'Already up to date: rows 3–5 hold the 3 September 2026 kit lines.');
   // nothing anywhere evaluates to an error
   const errs = [];
   for (const s of ss2.getSheets()) {
@@ -181,6 +213,15 @@ test('3. October carries everything forward from September (first-run workbook n
   assert.match(checks.find((x) => x[1] === 'Starting balances came from')[3], /September 2026 folder/);
   assert.equal(checks.find((x) => x[1] === 'AMZ SKU Map entries added this run')[2], 'OK');
   assert.ok(findFile(oct, 'ADS Starting Balance 09.30.2026.csv'));
+  // Rule 5.7: October's report replaces the October row typed earlier; September untouched
+  assert.deepEqual(woLog().slice(2), [
+    ['2026-09-03', 5, '10030', 0.54],
+    ['2026-09-15', 4, 'A0030', 0.38],
+    ['2026-09-16', 6, 'A0030', 0.38],
+    ['2026-10-03', 5, '10030', 0.54],
+    ['2026-10-15', 4, 'A0030', 0.38],
+    ['2026-10-16', 6, 'A0030', 0.38]
+  ]);
 });
 
 test('missing or duplicate files stop the run with a clear message', () => {
@@ -220,6 +261,8 @@ test('a failed run changes nothing in the folder', () => {
   const dec = parent.getFoldersByName('December 2026').next();
   ctx.CONFIG.MONTH_OVERRIDE = 'December 2026';
   const before = names(dec);
+  const logBefore = woLog();
   assert.throws(() => ctx.buildEOM(), /missing 1 day/);
   assert.deepEqual(names(dec), before, 'no workbook, Sell Thru or renamed files after a failed check');
+  assert.deepEqual(woLog(), logBefore, 'wo_log untouched after a failed check');
 });

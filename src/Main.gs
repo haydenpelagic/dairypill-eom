@@ -43,6 +43,10 @@ function buildEOM() {
   inputs.amzStart = start.amz;
   inputs.bomValues = readBomSource_();
 
+  // Rule 5.7: check the Ops Hub wo_log can take this month's kit lines (written after the workbook).
+  var woLog = CONFIG.WO_LOG.enabled ? planWoLogUpdate_(inputs.workOrders, m) : null;
+  inputs.woLogNote = woLog ? woLogSummary_(woLog.plan, m) : 'Not updated — WO_LOG.enabled is false in Config.gs.';
+
   // Rule 13.2: Shopify goes through the standalone Sell Thru file.
   renameEntry_(e.SHOPIFY, tabs.shopify);
   var sell = ensureSellThru_(monthFolder, m, e.SHOPIFY, false);
@@ -92,6 +96,13 @@ function buildEOM() {
   var wb = buildWorkbookModel_(inputs);
   assertExcelSafe_(wb.sheets);
   writeWorkbook_(ss, wb);
+
+  // Rule 5.7: this month's kit lines into the Ops Hub wo_log (re-read so nothing typed meanwhile is lost).
+  if (woLog) {
+    var wo = planWoLogUpdate_(inputs.workOrders, m);
+    applyWoLog_(wo.sheet, wo.plan);
+    log_('wo_log: ' + woLogSummary_(wo.plan, m));
+  }
 
   // Rule 2.3: rename raw files to their tab names (after a successful build).
   renameEntry_(e.ADS, tabs.adsEnd);
@@ -305,6 +316,37 @@ function renameEntry_(entry, base) {
   var ext = /\.[A-Za-z0-9]+$/.exec(name);
   var target = base + (ext && entry.file.getMimeType() !== MimeType.GOOGLE_SHEETS ? ext[0] : '');
   if (name !== target) entry.file.setName(target);
+}
+
+/**
+ * Rule 5.7: reads the Ops Hub wo_log (dates as yyyy-mm-dd in the Ops Hub's time zone) and works out
+ * what to write. Stops before anything changes if the tab, a header or a date is wrong.
+ */
+function planWoLogUpdate_(workOrders, m) {
+  var W = CONFIG.WO_LOG;
+  var ops = SpreadsheetApp.openById(W.spreadsheetId);
+  var sheet = sheetByName_(ops, W.sheetName);
+  if (!sheet) throw new Error('The Ops Hub has no tab named "' + W.sheetName + '". Rename it back, or set WO_LOG.enabled to false in Config.gs.');
+  var tz = ops.getSpreadsheetTimeZone();
+  var values = sheet.getDataRange().getValues().map(function (r) {
+    return r.map(function (v) { return Object.prototype.toString.call(v) === '[object Date]' ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : v; });
+  });
+  var plan = planWoLog_(values, workOrders, m);
+  if (plan.changed && plan.firstRow + plan.rows.length - 1 > sheet.getMaxRows()) {
+    throw new Error('The Ops Hub "' + W.sheetName + '" tab needs ' + (plan.firstRow + plan.rows.length - 1) + ' rows but has ' + sheet.getMaxRows() +
+      '. Add rows at the bottom and copy the Description/Channel/Month formulas down, then run again.');
+  }
+  return { sheet: sheet, plan: plan };
+}
+
+/** Rule 5.7: writes ONLY the Date, Quantity, SKU and Cost columns; every other column is left alone. */
+function applyWoLog_(sheet, plan) {
+  if (!plan.changed) return;
+  ['date', 'qty', 'sku', 'cost'].forEach(function (k, j) {
+    var range = sheet.getRange(plan.firstRow, plan.cols[k] + 1, plan.rows.length, 1);
+    if (k === 'sku') range.setNumberFormat('@'); // SKUs stay text (Rule 5.1a)
+    range.setValues(plan.rows.map(function (r) { return [r[j]]; }));
+  });
 }
 
 function readBomSource_() {

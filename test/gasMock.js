@@ -130,6 +130,7 @@ class MockSpreadsheet {
   getUrl() { return 'https://docs.google.com/spreadsheets/d/' + this.file.id; }
   getName() { return this.file.name; }
   getSheets() { return this.sheets.slice(); }
+  getSpreadsheetTimeZone() { return 'America/New_York'; }
   getSheetByName(n) { return this.sheets.find((s) => s.name === n) || null; }
   insertSheet(n) {
     if (this.sheets.some((s) => s.name.toLowerCase() === n.toLowerCase())) throw new Error('Sheet already exists: ' + n);

@@ -71,6 +71,10 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
   The run stops if one order's lines are not next to each other in the file.
 - **5.5 Work orders:** one row per kit line (Work Order, Date, SKU from the *Job* column, Pieces). "Setup Fee" lines are dropped; the *Description* text is ignored (it is sometimes wrong). The run stops if the line amounts don't add up to the report's TOTAL, or if the report is for a different month. Quantities only — labor dollars are not used.
 - **5.6 Manual Orders:** as received. CUSTOMER = MANUAL means samples/marketing sends; CUSTOMER = AMAZON means ADS → FBA transfers.
+- **5.7 Ops Hub `wo_log`:** the same kit lines (rule 5.5) are written to the `wo_log` tab of Ops Hub 2.0, one row per line: **Date** (col A), **Quantity** = Pieces (B), **SKU** = Job (C), **Cost** = the per-piece Rate (G). Setup fees are not written. Columns are found by their header in row 1. Nothing else on the tab is touched — Description, Channel and Month (D–F) are formulas there, and the rate table at the right stays put.
+  - Rows dated in the report's month are **replaced** by the report's lines (oldest first), so running again never doubles them and corrections in a new report replace the old numbers. Rows for other months are never changed; if the month's row count changes, the rows dated after it move up or down with it.
+  - The new rows go where that month's rows were; if there were none, before the first later-dated row, otherwise at the end.
+  - The run stops **before anything changes** if the tab or a header is missing, a row has a quantity/SKU/cost but no readable date, or a kit line is dated outside the report's month. `wo_log` is written last, after the workbook is built. Checks shows which rows hold the month's lines. Turn it off with `WO_LOG.enabled: false` in Config.gs.
 
 ## 6. Reference tabs
 
@@ -134,6 +138,7 @@ Each line shows **OK**, **FLAG** (needs attention), **CHECK** (confirm by eye) o
 - **12.6** MFG Starting / MFG Inventory filled in; SKUs typed as numbers on the yellow tabs (they must be text to match).
 - **12.7** Inventory Valuation total = sum of block subtotals.
 - **12.8** Work orders parsed completely (lines = report TOTAL).
+- **12.8a** Which `wo_log` rows hold this month's kit lines, and whether they changed (rule 5.7).
 - **12.9** Where the starting balances came from; where the Shopify data came from; files ignored; build time.
 
 ## 13. Shopify Sell Thru file (replaces the old "DairyPill Monthly Sell Thru" script)

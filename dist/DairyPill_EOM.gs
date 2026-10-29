@@ -34,6 +34,16 @@ var CONFIG = {
     headers: { parent: 'Parent SKU', parentDesc: 'Parent Desc', child: 'Child SKU', childDesc: 'Child Desc', qty: 'Qty' }
   },
 
+  // ---- Rule 5.7: the Ops Hub work-order log the kit lines are written to ----
+  // Only the four columns below are written (found by their header in row 1);
+  // every other column (Description, Channel, Month formulas, the rate table) is left alone.
+  WO_LOG: {
+    enabled: true, // false = don't touch wo_log
+    spreadsheetId: '1rCXpffesBqnfocXslxqb9VzuFCQd60X5IV_YPZTkEtE', // DairyPill Ops Hub 2.0
+    sheetName: 'wo_log',
+    headers: { date: 'Date', qty: 'Quantity', sku: 'SKU', cost: 'Cost' } // columns A, B, C, G
+  },
+
   // ---- Rule 6.2 / 7.3: first-run source for COGS and Prepaid -----------------
   // Used only when there is no previous month's workbook to carry them from.
   BOOTSTRAP_WORKBOOK_ID: '1vFNFEbUKyoTlj21PrKWjk_2Yfdhionh7wkkSF2J3pAw', // Sept 2026 (hand-built)
@@ -155,6 +165,10 @@ function buildEOM() {
   inputs.amzStart = start.amz;
   inputs.bomValues = readBomSource_();
 
+  // Rule 5.7: check the Ops Hub wo_log can take this month's kit lines (written after the workbook).
+  var woLog = CONFIG.WO_LOG.enabled ? planWoLogUpdate_(inputs.workOrders, m) : null;
+  inputs.woLogNote = woLog ? woLogSummary_(woLog.plan, m) : 'Not updated — WO_LOG.enabled is false in Config.gs.';
+
   // Rule 13.2: Shopify goes through the standalone Sell Thru file.
   renameEntry_(e.SHOPIFY, tabs.shopify);
   var sell = ensureSellThru_(monthFolder, m, e.SHOPIFY, false);
@@ -204,6 +218,13 @@ function buildEOM() {
   var wb = buildWorkbookModel_(inputs);
   assertExcelSafe_(wb.sheets);
   writeWorkbook_(ss, wb);
+
+  // Rule 5.7: this month's kit lines into the Ops Hub wo_log (re-read so nothing typed meanwhile is lost).
+  if (woLog) {
+    var wo = planWoLogUpdate_(inputs.workOrders, m);
+    applyWoLog_(wo.sheet, wo.plan);
+    log_('wo_log: ' + woLogSummary_(wo.plan, m));
+  }
 
   // Rule 2.3: rename raw files to their tab names (after a successful build).
   renameEntry_(e.ADS, tabs.adsEnd);
@@ -417,6 +438,37 @@ function renameEntry_(entry, base) {
   var ext = /\.[A-Za-z0-9]+$/.exec(name);
   var target = base + (ext && entry.file.getMimeType() !== MimeType.GOOGLE_SHEETS ? ext[0] : '');
   if (name !== target) entry.file.setName(target);
+}
+
+/**
+ * Rule 5.7: reads the Ops Hub wo_log (dates as yyyy-mm-dd in the Ops Hub's time zone) and works out
+ * what to write. Stops before anything changes if the tab, a header or a date is wrong.
+ */
+function planWoLogUpdate_(workOrders, m) {
+  var W = CONFIG.WO_LOG;
+  var ops = SpreadsheetApp.openById(W.spreadsheetId);
+  var sheet = sheetByName_(ops, W.sheetName);
+  if (!sheet) throw new Error('The Ops Hub has no tab named "' + W.sheetName + '". Rename it back, or set WO_LOG.enabled to false in Config.gs.');
+  var tz = ops.getSpreadsheetTimeZone();
+  var values = sheet.getDataRange().getValues().map(function (r) {
+    return r.map(function (v) { return Object.prototype.toString.call(v) === '[object Date]' ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : v; });
+  });
+  var plan = planWoLog_(values, workOrders, m);
+  if (plan.changed && plan.firstRow + plan.rows.length - 1 > sheet.getMaxRows()) {
+    throw new Error('The Ops Hub "' + W.sheetName + '" tab needs ' + (plan.firstRow + plan.rows.length - 1) + ' rows but has ' + sheet.getMaxRows() +
+      '. Add rows at the bottom and copy the Description/Channel/Month formulas down, then run again.');
+  }
+  return { sheet: sheet, plan: plan };
+}
+
+/** Rule 5.7: writes ONLY the Date, Quantity, SKU and Cost columns; every other column is left alone. */
+function applyWoLog_(sheet, plan) {
+  if (!plan.changed) return;
+  ['date', 'qty', 'sku', 'cost'].forEach(function (k, j) {
+    var range = sheet.getRange(plan.firstRow, plan.cols[k] + 1, plan.rows.length, 1);
+    if (k === 'sku') range.setNumberFormat('@'); // SKUs stay text (Rule 5.1a)
+    range.setValues(plan.rows.map(function (r) { return [r[j]]; }));
+  });
 }
 
 function readBomSource_() {
@@ -861,6 +913,117 @@ function parseWorkOrdersHtml_(html, m) {
       ' (' + m.yyyymm + '). Download the work orders for ' + m.label + '.');
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Rule 5.7: Ops Hub wo_log
+// ---------------------------------------------------------------------------
+
+function serialToISO_(serial) {
+  var d = new Date(Date.UTC(1899, 11, 30) + serial * 86400000);
+  return d.getUTCFullYear() + '-' + pad2_(d.getUTCMonth() + 1) + '-' + pad2_(d.getUTCDate());
+}
+
+/** "2026-09-01", "09/01/2026" or a date number -> date number; blank -> ''. Loud on anything else. */
+function parseLogDate_(v, where) {
+  if (v === '' || v === null || v === undefined) return '';
+  if (typeof v === 'number') return v;
+  if (v instanceof Date) return dateSerial_(v.getFullYear(), v.getMonth(), v.getDate());
+  var iso = /^\s*(\d{4})-(\d{1,2})-(\d{1,2})\s*$/.exec(String(v));
+  if (iso) return dateSerial_(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+  return parseMDY_(v, where);
+}
+
+function woLogRowKey_(cells) {
+  return cells.map(function (v) {
+    if (typeof v === 'number') return String(Math.round(v * 1e6) / 1e6);
+    return v === null || v === undefined ? '' : String(v).trim();
+  }).join('|');
+}
+
+/**
+ * Rule 5.7: how wo_log must change so its rows dated in month m are exactly the report's kit lines.
+ * `values` = the whole tab (row 1 = headers), dates as "yyyy-mm-dd" text or date numbers.
+ * Rows dated in the month are replaced; every other row is kept, in order. The month's rows go where
+ * its old rows were (else before the first later-dated row, else at the end).
+ * Returns {cols (0-based, by header), changed, firstRow (sheet row), rows ([date, qty, sku, cost] to write
+ * from firstRow; blank rows clear what moved up), removed, added, monthFirstRow, monthLastRow}.
+ */
+function planWoLog_(values, parsed, m) {
+  var H = CONFIG.WO_LOG.headers;
+  var tab = 'Ops Hub "' + CONFIG.WO_LOG.sheetName + '" tab';
+  if (!values.length) throw new Error('The ' + tab + ' is empty — it needs the headers ' + [H.date, H.qty, H.sku, H.cost].join(', ') + ' in row 1.');
+  var header = values[0].map(function (h) { return String(h === null || h === undefined ? '' : h).trim(); });
+  var cols = {};
+  ['date', 'qty', 'sku', 'cost'].forEach(function (k) { cols[k] = requireHeader_(header, H[k], tab + ' (row 1)'); });
+  var keys = ['date', 'qty', 'sku', 'cost'];
+  function blank(v) { return v === '' || v === null || v === undefined; }
+
+  var last = 0;
+  for (var i = 1; i < values.length; i++) {
+    if (keys.some(function (k) { return !blank(values[i][cols[k]]); })) last = i;
+  }
+  var existing = [];
+  for (i = 1; i <= last; i++) {
+    var r = values[i];
+    var empty = keys.every(function (k) { return blank(r[cols[k]]); });
+    var serial = parseLogDate_(r[cols.date], 'in the ' + tab + ', row ' + (i + 1) + ' (' + H.date + ')');
+    if (!empty && serial === '') {
+      throw new Error('The ' + tab + ', row ' + (i + 1) + ' has a ' + H.qty + '/' + H.sku + '/' + H.cost +
+        ' but no ' + H.date + '. Fill in the date or clear the row, then run again.');
+    }
+    existing.push({ row: i + 1, serial: serial,
+      cells: [serial === '' ? '' : serialToISO_(serial), blank(r[cols.qty]) ? '' : r[cols.qty], cleanSku_(r[cols.sku]), blank(r[cols.cost]) ? '' : r[cols.cost]] });
+  }
+
+  // The report's kit lines, oldest first (report order kept within a day). Setup fees are already gone.
+  var lines = parsed.lines.filter(function (l) { return typeof l.pieces === 'number' && l.pieces !== 0; });
+  var outside = [];
+  var fresh = lines.map(function (l, n) {
+    var s = parseLogDate_(l.date, 'in work order ' + l.wo);
+    if (s < m.firstSerial || s > m.endSerial) outside.push(l.wo + ' (' + l.date + ')');
+    return { serial: s, n: n, cells: [serialToISO_(s), l.pieces, l.sku, l.rate] };
+  }).sort(function (a, b) { return a.serial - b.serial || a.n - b.n; });
+  if (outside.length) {
+    throw new Error('The work-order report has kit lines dated outside ' + m.label + ': ' + outside.join(', ') +
+      '. wo_log is updated one month at a time, so these lines would be lost or counted twice. Ask ADS to correct the dates, then run again.');
+  }
+
+  function inMonth(e) { return e.serial !== '' && e.serial >= m.firstSerial && e.serial <= m.endSerial; }
+  var old = existing.filter(inMonth);
+  var kept = existing.filter(function (e) { return !inMonth(e); });
+  var at;
+  if (old.length) {
+    at = kept.filter(function (e) { return e.row < old[0].row; }).length;
+  } else {
+    at = kept.length;
+    for (i = 0; i < kept.length; i++) if (kept[i].serial !== '' && kept[i].serial > m.endSerial) { at = i; break; }
+  }
+  function cellsOf(e) { return e.cells; }
+  var target = kept.slice(0, at).map(cellsOf).concat(fresh.map(cellsOf), kept.slice(at).map(cellsOf));
+  var before = existing.map(cellsOf);
+  var size = Math.max(target.length, before.length);
+  var first = -1;
+  for (i = 0; i < size; i++) {
+    var want = target[i] || ['', '', '', ''], have = before[i] || ['', '', '', ''];
+    if (woLogRowKey_(want) !== woLogRowKey_(have)) { first = i; break; }
+  }
+  var rows = [];
+  if (first >= 0) for (i = first; i < size; i++) rows.push(target[i] || ['', '', '', '']);
+  return {
+    cols: cols, changed: first >= 0, firstRow: first >= 0 ? first + 2 : null, rows: rows,
+    removed: old.length, added: fresh.length, monthFirstRow: at + 2, monthLastRow: at + 1 + fresh.length,
+    laterRowsMoved: old.length !== fresh.length && kept.slice(at).some(function (e) { return e.serial !== ''; })
+  };
+}
+
+/** One plain-English line about what happened to wo_log (Checks tab and the run log). */
+function woLogSummary_(plan, m) {
+  var where = plan.added ? 'rows ' + plan.monthFirstRow + '–' + plan.monthLastRow + ' hold the ' + plan.added + ' ' + m.label + ' kit lines'
+    : 'no ' + m.label + ' kit lines';
+  if (!plan.changed) return 'Already up to date: ' + where + '.';
+  return 'Updated: ' + where + ' (replaced ' + plan.removed + ' ' + m.label + ' row' + (plan.removed === 1 ? '' : 's') + ' that were there' +
+    (plan.laterRowsMoved ? '; rows dated after ' + m.label + ' moved to make room' : '') + ').';
 }
 
 // ---------------------------------------------------------------------------
@@ -1517,6 +1680,7 @@ function checksModel_(ctx, info) {
   add('12.8', 'Work orders parsed completely', 'OK',
     info.workOrders.lines + ' kit lines (' + info.workOrders.fees + ' fee lines skipped); line amounts $' + info.workOrders.lineTotal.toFixed(2) +
     ' = report TOTAL $' + info.workOrders.reportTotal.toFixed(2) + '; billing month ' + info.workOrders.month + '.');
+  if (info.woLogNote) add('5.7', 'Ops Hub wo_log (work-order log)', 'INFO', info.woLogNote);
   add('8.2', 'Kits built that have no BOM rows', info.kitsWithoutBom.length ? 'FLAG: ' + info.kitsWithoutBom.length : 'OK',
     info.kitsWithoutBom.length ? 'Components not deducted for: ' + info.kitsWithoutBom.join(', ') + ' — add them to the Ops Hub BOM.' : '');
   add('6.1', 'BOM duplicate rows removed', info.bomDuplicates.length ? 'INFO' : 'OK', info.bomDuplicates.join('; '));
@@ -1718,6 +1882,7 @@ function buildWorkbookModel_(inputs) {
     shopifySource: (inputs.sources && inputs.sources.shopifySource) || '',
     mfgStartSource: (inputs.sources && inputs.sources.mfgStartSource) || '',
     ignoredFiles: inputs.ignoredFiles || [],
+    woLogNote: inputs.woLogNote || '',
     builtAt: inputs.builtAt || inputs.todayStr
   };
   var checksM = checksModel_(ctx, info);

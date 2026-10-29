@@ -144,3 +144,37 @@ test('only columns the formulas use must be numbers; other odd values are kept a
   const bad = { header: t.header, rows: [['P', 'B1', '5', 'n/a']] };
   assert.throws(() => L.bizModel_('biz', bad, L.tabNames_(L.monthInfo_(2026, 8))), /column "Units Ordered"/);
 });
+
+test('Rule 5.7: wo_log — the month is replaced by the report, other months kept, loud on bad input', () => {
+  const m = L.monthInfo_(2026, 8);
+  const H = ['Date', 'Quantity', 'SKU', 'Description', 'Channel', 'Month', 'Cost'];
+  const line = (date, sku, pieces, rate) => ({ wo: 'WO_1', date, sku, pieces, rate });
+  const parsed = { lines: [line('2026-09-14', '10180', 50, 0.54), line('2026-09-03', 'A0030', 990, 0.38), line('2026-09-14', '10270', 15, 0.59)] };
+  const row = (d, q, s, c) => [d, q, s, '', '', '', c];
+
+  // no September rows yet: inserted before the first later-dated row, oldest first, report order within a day
+  let p = L.planWoLog_([H, row('2026-08-24', 200, '10030', 0.54), row(46238, 7, 'A0030', 0.38) /* 2026-08-02 as a date number */, row('10/02/2026', 7, 'A0030', 0.38)], parsed, m);
+  assert.equal(p.firstRow, 4);
+  assert.deepEqual(plain(p.rows), [['2026-09-03', 990, 'A0030', 0.38], ['2026-09-14', 50, '10180', 0.54], ['2026-09-14', 15, '10270', 0.59], ['2026-10-02', 7, 'A0030', 0.38]]);
+  assert.deepEqual([p.removed, p.added, p.monthFirstRow, p.monthLastRow, p.laterRowsMoved], [0, 3, 4, 6, true]);
+
+  // fewer lines than before, at the end of the log: leftover rows are cleared
+  p = L.planWoLog_([H, row('2026-08-24', 200, '10030', 0.54), row('2026-09-01', 1, 'X', 1), row('2026-09-02', 1, 'X', 1), row('2026-09-03', 1, 'X', 1), row('2026-09-04', 1, 'X', 1)], parsed, m);
+  assert.equal(p.firstRow, 3);
+  assert.deepEqual(plain(p.rows.slice(3)), [['', '', '', '']]);
+  assert.match(L.woLogSummary_(p, m), /^Updated: rows 3–5 hold the 3 September 2026 kit lines \(replaced 4 September 2026 rows that were there\)\.$/);
+
+  // already matching (numbers typed as text, SKU stored as a number): nothing to write
+  p = L.planWoLog_([H, row('2026-09-03', '990', 'A0030', 0.38), row('2026-09-14', 50, 10180, '0.54'), row('2026-09-14', 15, '10270', 0.59)], parsed, m);
+  assert.equal(p.changed, false);
+
+  // columns found by header, wherever they are; zero-piece lines skipped
+  p = L.planWoLog_([['SKU', 'Cost', 'Date', 'Quantity']], { lines: [line('2026-09-03', '10030', 5, 0.54), line('2026-09-03', '10030', '', 0.54)] }, m);
+  assert.deepEqual(plain(p.cols), { date: 2, qty: 3, sku: 0, cost: 1 });
+  assert.deepEqual(plain(p.rows), [['2026-09-03', 5, '10030', 0.54]]);
+
+  assert.throws(() => L.planWoLog_([['Date', 'Qty', 'SKU', 'Cost']], parsed, m), /missing the column "Quantity"/);
+  assert.throws(() => L.planWoLog_([H, row('', 5, '10030', 0.54)], parsed, m), /row 2 has a Quantity\/SKU\/Cost but no Date/);
+  assert.throws(() => L.planWoLog_([H, row('Sept 3', 5, '10030', 0.54)], parsed, m), /row 2 \(Date\) but found "Sept 3"/);
+  assert.throws(() => L.planWoLog_([H], { lines: [line('2026-08-31', '10030', 5, 0.54)] }, m), /dated outside September 2026: WO_1 \(2026-08-31\)/);
+});
