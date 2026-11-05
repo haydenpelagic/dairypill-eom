@@ -144,3 +144,65 @@ test('only columns the formulas use must be numbers; other odd values are kept a
   const bad = { header: t.header, rows: [['P', 'B1', '5', 'n/a']] };
   assert.throws(() => L.bizModel_('biz', bad, L.tabNames_(L.monthInfo_(2026, 8))), /column "Units Ordered"/);
 });
+
+// ---------------------------------------------------------------- Rule 5.6: Ops Hub shipment logs
+test('Rule 5.6: Ops Hub logs — month by Ship Date, loud on bad rows', () => {
+  const m = L.monthInfo_(2026, 9);
+  const H = ['ADS Order Number', 'Channel', 'SKU', 'Quantity', 'Order Date', 'Ship Date'];
+  const p = L.parseOpsLog_([H, ['1', 'Samples', '80030', '3', '10/01/2026', '10/02/2026'], ['2', 'DTC', '10030', 1, '', 46336],
+    ['3', 'CX', '10030', 1, '', '']], 'manual', m); // 46336 = 11/10/2026
+  assert.deepEqual(JSON.parse(JSON.stringify(p.rows)), [['1', 'Samples', '80030', 3, L.dateSerial_(2026, 9, 1), L.dateSerial_(2026, 9, 2)]]);
+  assert.equal(p.otherMonths, 1);
+  assert.equal(p.notShipped, 1);
+  const bad = (row, re) => assert.throws(() => L.parseOpsLog_([H, row], 'manual', m), re);
+  bad(['1', 'Wholesale', '80030', 3, '', '10/02/2026'], /Channel "Wholesale" in Ops Hub "manualorder_log", row 2 is not one of: DTC, Marketing, CX, TikTok, Samples, Amazon/);
+  bad(['1', 'DTC', 8003051003, 3, '', '10/02/2026'], /turned into a number/);
+  bad(['1', 'DTC', '80030', 'three', '', '10/02/2026'], /Expected a number/);
+  bad(['1', 'DTC', '', 3, '', '10/02/2026'], /No SKU/);
+  bad(['1', 'DTC', '80030', 3, '', 'next week'], /Expected a date/);
+  assert.throws(() => L.parseOpsLog_([['Order', 'SKU']], 'amz', m), /missing the column "ADS Order Number"/);
+});
+
+// ---------------------------------------------------------------- Rule 15: posting to Ops Hub
+test('Rule 15: formulas are moved like dragging down / right', () => {
+  assert.equal(L.shiftFormulaRows_('=if(A120=0,"", eomonth(A120,0))', 1), '=if(A121=0,"", eomonth(A121,0))');
+  assert.equal(L.shiftFormulaRows_('=xlookup(C6,sku_matrix!A:A,sku_matrix!B:B,"")', 2), '=xlookup(C8,sku_matrix!A:A,sku_matrix!B:B,"")');
+  assert.equal(L.shiftFormulaRows_('=IF(OR(LEFT(A70,1)="1",LEFT(A71,1)="8"),TRUE,FALSE)', 1), '=IF(OR(LEFT(A71,1)="1",LEFT(A72,1)="8"),TRUE,FALSE)');
+  assert.equal(L.shiftFormulaRows_('=A$2+$B3+"A1"', 1), '=A$2+$B4+"A1"');
+  assert.equal(L.shiftFormulaRows_("='sell thru A1'!B2", 1), "='sell thru A1'!B3");
+  assert.equal(L.shiftFormulaCols_('=sum(Y6:Y)', 1), '=sum(Z6:Z)');
+  assert.equal(L.shiftFormulaCols_('=sumifs(Y6:Y,$A6:$A,"Amazon")', 1), '=sumifs(Z6:Z,$A6:$A,"Amazon")');
+  assert.equal(L.shiftFormulaCols_('=EOMONTH(Z5,1)', 1), '=EOMONTH(AA5,1)');
+  assert.equal(L.shiftFormulaCols_('=SUM(D3:D)', 1), '=SUM(E3:E)');
+});
+
+test('Rule 15.3/15.5: month column and grouped rows', () => {
+  const cfg = { sheetName: 'sell_thru monthly', headerRow: 2, firstMonthCol: 4 };
+  const aug = L.dateSerial_(2026, 7, 31);
+  const v = [['', '', '', 'Actual'], ['Channel', 'Code', 'SKU', aug],
+    ['DTC', 'DTC10030', '10030', 5], ['DTC', 'DTC80030', '80030', 1], ['Marketing', 'M50001', '50001', 2], ['Amazon', 'AA0030', 'A0030', 9]];
+  assert.deepEqual(JSON.parse(JSON.stringify(L.planMonthColumn_(v, cfg, L.monthInfo_(2026, 8)))), { col: 5, isNew: true, prevCol: 4 });
+  assert.deepEqual(JSON.parse(JSON.stringify(L.planMonthColumn_(v, cfg, L.monthInfo_(2026, 7)))), { col: 4, isNew: false });
+  assert.throws(() => L.planMonthColumn_(v, cfg, L.monthInfo_(2026, 9)), /next one to post is September 2026, not October 2026/);
+  const ins = JSON.parse(JSON.stringify(L.planGroupedRows_(v, cfg, 0, 2, [
+    { group: 'DTC', sku: '10030' }, { group: 'DTC', sku: '51002' }, { group: 'Samples', sku: '80030' }, { group: 'DTC', sku: '50003' }])));
+  assert.deepEqual(ins, [{ afterRow: 6, items: [{ group: 'Samples', sku: '80030' }] },
+    { afterRow: 4, items: [{ group: 'DTC', sku: '50003' }, { group: 'DTC', sku: '51002' }] }]);
+  const dup = v.concat([['DTC', 'x', '10030', 0]]);
+  assert.throws(() => L.planGroupedRows_(dup, cfg, 0, 2, []), /same row twice: DTC 10030 \(rows 3 and 7\)/);
+  const col = L.monthColumnValues_(v, cfg, 0, 2, { 'DTC|10030': 7, 'Amazon|A0030': 4 });
+  assert.deepEqual(JSON.parse(JSON.stringify(col)), { firstRow: 3, values: [[7], [0], [0], [4]] });
+});
+
+test('Rule 15.2/15.4: wo_log refuses a month already posted; sku_matrix gets only new single SKUs', () => {
+  const m = L.monthInfo_(2026, 8);
+  const wo = [['Date', 'Quantity', 'SKU', 'Cost', 'Month', 'Channel'], [L.dateSerial_(2026, 7, 24), 200, '10030', 0.54, '', '']];
+  const plan = L.planWoLog_(wo, [{ date: L.dateSerial_(2026, 8, 3), qty: 5, sku: '10030', rate: 0.54 }], m);
+  assert.equal(plan.afterRow, 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(plan.rows)), [{ 1: L.dateSerial_(2026, 8, 3), 2: 5, 3: '10030', 4: 0.54 }]);
+  assert.throws(() => L.planWoLog_(wo.concat([[L.dateSerial_(2026, 8, 3), 5, '10030', 0.54]]), [], m), /already has 1 rows dated September 2026/);
+  assert.throws(() => L.planWoLog_([['When', 'Qty']], [], m), /expected "Date" in cell A1/);
+  const sku = L.planSkuMatrix_([['SKU', 'Description', 'Status'], ['10030', 'Kit', 'ACTIVE'], ['a80004', '', '']],
+    ['10030', '80030,51002', 'A80004', '51003', '51003'], { 51003: 'Cream Travel Tin' });
+  assert.deepEqual(JSON.parse(JSON.stringify(sku.rows)), [{ 1: '51003', 2: 'Cream Travel Tin', 3: 'NEEDS VERIFICATION' }]);
+});

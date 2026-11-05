@@ -30,6 +30,24 @@ var CONFIG = {
     headers: { parent: 'Parent SKU', parentDesc: 'Parent Desc', child: 'Child SKU', childDesc: 'Child Desc', qty: 'Qty' }
   },
 
+  // ---- Rules 5.6 and 15: DairyPill Ops Hub 2.0 tabs the script reads and writes -
+  OPS_HUB: {
+    spreadsheetId: '1rCXpffesBqnfocXslxqb9VzuFCQd60X5IV_YPZTkEtE', // DairyPill Ops Hub 2.0
+    // Rule 5.6: shipments typed in Ops Hub before running buildEOM. Month = Ship Date.
+    manualLog: { sheetName: 'manualorder_log', columns: 'A:F',
+      headers: { order: 'ADS Order Number', channel: 'Channel', sku: 'SKU', qty: 'Quantity', orderDate: 'Order Date', shipDate: 'Ship Date' } },
+    amzLog: { sheetName: 'amz_log', columns: 'A:F',
+      headers: { order: 'ADS Order Number', amazon: 'Amazon Number', sku: 'SKU', qty: 'Quantity', orderDate: 'Order Date', shipDate: 'Ship Date' } },
+    // Rule 15: where postToOpsHub() writes the finished month.
+    woLog:     { sheetName: 'wo_log', headers: ['Date', 'Quantity', 'SKU', 'Cost'] },
+    sellThru:  { sheetName: 'sell_thru monthly', headerRow: 5, headers: ['Channel', 'Code', 'SKU', 'Description'], firstMonthCol: 5 },
+    inventory: { sheetName: 'inventory_eom', headerRow: 2, headers: ['Code', 'Location', 'SKU'], firstMonthCol: 4 },
+    skuMatrix: { sheetName: 'sku_matrix', headers: ['SKU', 'Description', 'Status'], newStatus: 'NEEDS VERIFICATION' }
+  },
+  // Rule 15.1: postToOpsHub() refuses to post while the Checks tab shows any FLAG.
+  // Set to true only for a run where you have read every FLAG and decided it doesn't matter.
+  POST_DESPITE_FLAGS: false,
+
   // ---- Rule 6.2 / 7.3: first-run source for COGS and Prepaid -----------------
   // Used only when there is no previous month's workbook to carry them from.
   BOOTSTRAP_WORKBOOK_ID: '1vFNFEbUKyoTlj21PrKWjk_2Yfdhionh7wkkSF2J3pAw', // Sept 2026 (hand-built)
@@ -43,7 +61,8 @@ var CONFIG = {
     LEDGER:   { label: 'Amazon Inventory Ledger',  headers: ['Date', 'FNSKU', 'MSKU', 'Disposition', 'Receipts', 'Ending Warehouse Balance'] },
     BIZ:      { label: 'Amazon Business Report',   headers: ['(Child) ASIN', 'Units Ordered'] },
     SHOPIFY:  { label: 'Shopify order export',     headers: ['Name', 'Lineitem quantity', 'Lineitem sku', 'Tags'] },
-    MANUAL:   { label: 'Manual Orders',            headers: ['CUSTOMER', 'ORDER', 'SKU', 'QUANTITY', 'DATE'] },
+    // Rule 2.5: no longer used (replaced by the Ops Hub logs) — recognized only so the run can refuse it.
+    MANUAL:   { label: 'Manual Orders file',       headers: ['CUSTOMER', 'ORDER', 'SKU', 'QUANTITY', 'DATE'] },
     WORK_ORDERS: { label: 'ADS work orders', marker: 'Production Detail Worksheet Report' }
   },
 
@@ -55,8 +74,7 @@ var CONFIG = {
                numericFrom: 'Starting Warehouse Balance', numericTo: 'Unknown Events' },
     BIZ:     { asin: '(Child) ASIN', units: 'Units Ordered', numericFrom: 'Sessions - Total' },
     SHOPIFY: { name: 'Name', sku: 'Lineitem sku', qty: 'Lineitem quantity', tags: 'Tags',
-               numeric: ['Lineitem quantity', 'Subtotal', 'Shipping', 'Taxes', 'Total', 'Discount Amount', 'Lineitem price', 'Lineitem compare at price', 'Refunded Amount', 'Outstanding Balance', 'Lineitem discount'] },
-    MANUAL:  { customer: 'CUSTOMER', sku: 'SKU', qty: 'QUANTITY' }
+               numeric: ['Lineitem quantity', 'Subtotal', 'Shipping', 'Taxes', 'Total', 'Discount Amount', 'Lineitem price', 'Lineitem compare at price', 'Refunded Amount', 'Outstanding Balance', 'Lineitem discount'] }
   },
 
   // ---- Rule 5.4: Shopify channel rules (first match wins, not case-sensitive) -
@@ -67,13 +85,11 @@ var CONFIG = {
     { keyword: 'tiktok',      channel: 'TikTok' }
   ],
   DEFAULT_CHANNEL: 'DTC',
-  // Column order on Outbound Summary and Channel Breakdown.
+  // Shopify channels, in Channel Breakdown column order (Rule 13).
   CHANNELS: ['DTC', 'Marketing', 'CX', 'TikTok'],
+  // Rule 11.2: Outbound Summary / sell-through channels. Samples comes only from manualorder_log.
+  OUTBOUND_CHANNELS: ['DTC', 'Marketing', 'CX', 'TikTok', 'Samples'],
   AMAZON_CHANNEL_LABEL: 'Amazon',
-
-  // ---- Rule 11.2: Manual Orders rows with this CUSTOMER count as Marketing ---
-  MANUAL_MARKETING_CUSTOMER: 'MANUAL',
-  MANUAL_MARKETING_CHANNEL: 'Marketing',
 
   // ---- Rule 6.3: Amazon MSKU → our SKU ----------------------------------------
   AMAZON_SKU_RULES: {
@@ -87,6 +103,7 @@ var CONFIG = {
   // ---- Rule 9: locations, their labels and categorization ---------------------
   LOCATIONS: {
     ADS: { label: 'ADS',    categorization: 'Ending Inventory' },
+    TRANSIT: { label: 'In Transit to AMZ', categorization: 'Ending Inventory' }, // Rule 9.5
     AMZ: { label: 'Amazon', categorization: 'Ending Inventory' },
     MFG: {                  categorization: 'Raw Material - Component' } // label = the MFG name typed on the MFG Inventory tab
   },
@@ -95,6 +112,7 @@ var CONFIG = {
   MANUAL_TABS: {
     MFG_INVENTORY: ['MFG', 'SKU', 'Received Qty', 'EOM Qty'],
     MFG_STARTING:  ['MFG', 'SKU', 'EOM Qty'],
+    TRANSIT_STARTING: ['SKU', 'Qty'],
     ADS_RECEIPTS:  ['PO Number', 'SKU', 'Qty'],
     PREPAID:       ['Prepaid POs', 'Invoice', 'SKU', 'Description', 'Quantity', 'Unit Cost', 'Total Cost', 'Amount Paid']
   },

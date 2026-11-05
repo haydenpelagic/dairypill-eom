@@ -10,14 +10,15 @@ The owner is non-technical: explain in plain English, never ask them to review c
 
 ## Layout
 - `src/Config.gs` — every setting (folder ID, channel rules, SKU renames, column names).
-- `src/Logic.gs` — pure functions: parsing, SKU lists, and every formula. No Google calls. All tested in Node.
-- `src/Main.gs` — entry points `buildEOM()` / `shopifyOnly()`; Drive reading, starting balances.
+- `src/Logic.gs` — pure functions: parsing, SKU lists, every formula, and the Ops Hub posting plans. No Google calls. All tested in Node.
+- `src/Main.gs` — entry points `buildEOM()` / `shopifyOnly()` / `postToOpsHub()`; Drive + Ops Hub reading, starting balances, Ops Hub posting (RULES §15).
 - `src/Sheets.gs` — writing sheet models to Google Sheets.
 - `dist/DairyPill_EOM.gs` — generated bundle the owner pastes into Apps Script. Never edit by hand (`npm run bundle`; a test fails if stale).
 - `test/` — `formulaEngine.js` calculates the generated formulas; `gasMock.js` is an in-memory Drive/Sheets so `e2e.test.js` runs the real entry points.
 - `tools/replay.js <folder>` — replays a real month from local CSV exports and compares with the hand-built report (data is never committed).
 
 ## Hard constraints
+- Ops Hub 2.0 (`CONFIG.OPS_HUB`) is both an input (`manualorder_log`, `amz_log`, BOM) and an output (`wo_log`, `sell_thru monthly`, `inventory_eom`, `sku_matrix`). Excel-safe rules apply to the EOM workbook only; in Ops Hub, copy its own formulas (drag down/right), never invent new ones.
 - Formulas must be Excel-safe (accounting downloads .xlsx): SUMIFS/SUMIF/COUNTIF(S)/COUNT/COUNTA/INDEX+MATCH/IF/IFERROR/ISNUMBER/SEARCH/MAX/SUM/ABS only. `assertExcelSafe_` enforces it.
 - No hardcoded SKUs, channels or row positions in summary formulas; rows come from source data (RULES §9.2).
 - Tab names ≤ 31 chars, no "/" (dates as MM.DD.YYYY).

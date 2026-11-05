@@ -29,8 +29,12 @@ No coding needed. You copy one file into Google Apps Script once; after that you
 
 ## B. Every month
 
-1. In **DairyPill EOM**, create the month's folder, e.g. **October 2026**.
-2. Drop these files in it (file names don't matter — the script recognizes each by its columns):
+1. **In Ops Hub 2.0, finish the shipment logs for the month** (the script reads them; a row counts in the month of its **Ship Date**):
+   - **manualorder_log** — every hand-entered shipment from ADS, with its **Channel** (DTC, Marketing, CX, TikTok, Samples, Amazon).
+   - **amz_log** — every ADS → Amazon transfer.
+   Keep the SKU column formatted as **Plain text** so bundles like `80030,51003` stay intact.
+2. In **DairyPill EOM**, create the month's folder, e.g. **October 2026**.
+3. Drop these files in it (file names don't matter — the script recognizes each by its columns):
 
    | File | How to get it |
    |---|---|
@@ -38,20 +42,21 @@ No coding needed. You copy one file into Google Apps Script once; after that you
    | Amazon Inventory Ledger (CSV) | Seller Central → Inventory Ledger → **Summary view**, **daily**, dates **1st through last day** of the month |
    | Amazon Business Report (CSV) | Detail Page Sales and Traffic by Child Item, **1st through last day** |
    | Shopify orders export (CSV) | Shopify → Orders → Export, the month's date range |
-   | Manual Orders (CSV or Google Sheet) | Columns `CUSTOMER, ORDER, SKU, QUANTITY, DATE` (header row required even if there are no orders) |
    | ADS work orders (`ProductionLabor…xls`) | ADS Production Detail Worksheet Report for the month |
 
    **Don't** add the start-of-month ADS snapshot or Amazon starting balance — the script copies them from last month.
+   **Don't** add a Manual Orders file — it is no longer used (the run stops if one is there).
    Excel (`.xlsx`) files are not accepted; save as CSV or Google Sheet.
 
-3. In the script editor choose **buildEOM** → **Run**. It takes a few minutes. When it finishes, the **Execution log** at the bottom shows a link to the workbook.
-4. Open the workbook. It opens on the **Checks** tab — anything red (**FLAG**) needs attention.
-5. Fill in the **yellow tabs**:
+4. In the script editor choose **buildEOM** → **Run**. It takes a few minutes. When it finishes, the **Execution log** at the bottom shows a link to the workbook.
+5. Open the workbook. It opens on the **Checks** tab — anything red (**FLAG**) needs attention.
+6. Fill in the **yellow tabs**:
    - **MFG Inventory** — one row per manufacturer and SKU: `MFG` (VitaQuest, VitaPros, …), `SKU`, `Received Qty`, `EOM Qty`.
    - **ADS Receipts** — `PO Number`, `SKU`, `Qty` received at ADS this month.
    - **COGS** — add any SKU the Checks tab says has no cost.
-6. Run **buildEOM** again. Everything you typed in yellow tabs is kept; the summaries update.
-7. For accounting: **File → Download → Microsoft Excel (.xlsx)**.
+7. Run **buildEOM** again. Everything you typed in yellow tabs is kept; the summaries update.
+8. For accounting: **File → Download → Microsoft Excel (.xlsx)**.
+9. **Post to Ops Hub:** choose **postToOpsHub** → **Run** (once, when the workbook is final and Checks has no FLAG). It adds the month to `wo_log`, `sell_thru monthly`, `inventory_eom`, and any new SKUs to `sku_matrix` as NEEDS VERIFICATION. Running it twice for the same month is refused for `wo_log`, so nothing is doubled.
 
 ### Shopify only
 To make just the **DairyPill Sell Thru** file (replaces the old "DairyPill Monthly Sell Thru" script): choose **shopifyOnly** → **Run**. It uses the Shopify CSV in the month folder.
@@ -70,7 +75,8 @@ The script normally takes starting balances from last month's folder. For the fi
    - last month's month-end **ADS stock snapshot** (CSV), and
    - an **Amazon Inventory Ledger** (CSV) that **ends on last month's final day** (e.g. for September: a ledger for August, or just 8/31).
 3. COGS and Prepaid are copied automatically from the hand-built September workbook.
-4. On the **MFG Starting Balance** tab, type last month's VitaQuest/VitaPros EOM quantities, then run again.
+4. On the **MFG Starting Balance** tab, type last month's VitaQuest/VitaPros EOM quantities.
+5. On the **In Transit Start** tab, type anything that had left ADS for Amazon but wasn't received by Amazon on last month's final day (`SKU`, `Qty`). Leave it empty if nothing was in transit. Then run again.
 
 From the second month on, none of this is needed.
 
@@ -80,6 +86,7 @@ From the second month on, none of this is needed.
 
 - The run stops with a red message in the Execution log that says what's wrong in plain English (missing file, two ledgers, ledger missing a day, work orders that don't add up…). Fix that and run again — a failed run doesn't change anything in the folder.
 - **"Exceeded maximum execution time"**: run **shopifyOnly** first, then **buildEOM** (it will reuse the Sell Thru file).
+- **postToOpsHub says a month is already posted, or a row appears twice:** follow the message (delete the month's `wo_log` rows, or the duplicate row), then run it again. Nothing is written until every check passes.
 - Anything else: copy the red message and paste it into Claude Code.
 
 ## E. Changing a rule

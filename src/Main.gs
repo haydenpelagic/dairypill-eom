@@ -2,6 +2,7 @@
 // DairyPill EOM Report — ENTRY POINTS
 //   buildEOM()    builds (or rebuilds) the month's EOM workbook      (Rules 1–12)
 //   shopifyOnly() makes only the standalone Shopify Sell Thru file   (Rule 13)
+//   postToOpsHub() posts the finished month to Ops Hub 2.0           (Rule 15)
 // Pick the function in the toolbar dropdown and press Run.
 // =============================================================================
 
@@ -15,9 +16,13 @@ function buildEOM() {
 
   // Rule 2: recognize every file by its columns.
   var scan = scanFolder_(monthFolder, m);
-  requireOneOfEach_(scan, ['ADS', 'LEDGER', 'BIZ', 'SHOPIFY', 'MANUAL', 'WORK_ORDERS'], m.label);
+  if (scan.byType.MANUAL.length) {
+    throw new Error('"' + scan.byType.MANUAL[0].file.getName() + '" is a Manual Orders file. Those are no longer used: enter shipments in Ops Hub ' +
+      '"' + CONFIG.OPS_HUB.manualLog.sheetName + '" (samples, marketing…) and "' + CONFIG.OPS_HUB.amzLog.sheetName + '" (ADS → Amazon), then remove the file from "' + m.label + '".');
+  }
+  requireOneOfEach_(scan, ['ADS', 'LEDGER', 'BIZ', 'SHOPIFY', 'WORK_ORDERS'], m.label);
   var e = {};
-  ['ADS', 'LEDGER', 'BIZ', 'SHOPIFY', 'MANUAL', 'WORK_ORDERS'].forEach(function (k) { e[k] = scan.byType[k][0]; });
+  ['ADS', 'LEDGER', 'BIZ', 'SHOPIFY', 'WORK_ORDERS'].forEach(function (k) { e[k] = scan.byType[k][0]; });
 
   // Read and check every raw file BEFORE changing anything in Drive (Rule 1.4).
   var shopifyTable = tableFromEntry_(e.SHOPIFY, 'Shopify order export');
@@ -32,7 +37,6 @@ function buildEOM() {
     ledger: ledgerTable,
     biz: tableFromEntry_(e.BIZ, 'Amazon Business Report'),
     shopify: shopifyTable,
-    manual: tableFromEntry_(e.MANUAL, 'Manual Orders file'),
     workOrders: parseWorkOrdersHtml_(e.WORK_ORDERS.text, m),
     ignoredFiles: scan.ignored
   };
@@ -42,6 +46,11 @@ function buildEOM() {
   inputs.adsStart = start.ads;
   inputs.amzStart = start.amz;
   inputs.bomValues = readBomSource_();
+
+  // Rule 5.6: shipments from the Ops Hub logs (this month's rows, by Ship Date).
+  var hub = SpreadsheetApp.openById(CONFIG.OPS_HUB.spreadsheetId);
+  inputs.manualLog = parseOpsLog_(readOpsLogValues_(hub, CONFIG.OPS_HUB.manualLog), 'manual', m);
+  inputs.amzLog = parseOpsLog_(readOpsLogValues_(hub, CONFIG.OPS_HUB.amzLog), 'amz', m);
 
   // Rule 13.2: Shopify goes through the standalone Sell Thru file.
   renameEntry_(e.SHOPIFY, tabs.shopify);
@@ -81,11 +90,25 @@ function buildEOM() {
     inputs.mfgStartFromPrev = false;
   }
 
+  // Rule 4.5: In Transit starting balance — last month's In Transit ending, else typed (first run).
+  var prevVar = prevSs && sheetByName_(prevSs, tabs.variance);
+  if (prevVar) {
+    inputs.transitStart = prevVar.getDataRange().getValues().filter(function (r) {
+      return String(r[0]).trim() === CONFIG.LOCATIONS.TRANSIT.label && cleanSku_(r[1]) !== '';
+    }).map(function (r) { return [cleanSku_(r[1]), r[8]]; });
+    inputs.transitStartFromPrev = true;
+  } else {
+    inputs.transitStart = rowsOf_(sheetByName_(ss, tabs.transitStart));
+    inputs.transitStartFromPrev = false;
+  }
+
   inputs.sources = {
     startSources: start.sourceText,
     shopifySource: '"' + sellThruName_(m) + '" in the month folder (' + (sell.reused ? 'reused — newer than the Shopify CSV' : 'rebuilt from the Shopify CSV this run') + ').',
     mfgStartSource: prevMfg ? 'Copied from "MFG Inventory ' + m.prevEndStr + '" in the ' + m.prevLabel + ' workbook.' :
-      'No ' + m.prevLabel + ' workbook found — first run: type last month\'s MFG EOM quantities on "' + tabs.mfgStart + '".'
+      'No ' + m.prevLabel + ' workbook found — first run: type last month\'s MFG EOM quantities on "' + tabs.mfgStart + '".',
+    transitStartSource: prevVar ? 'Copied from the "' + CONFIG.LOCATIONS.TRANSIT.label + '" rows of Variance Overview in the ' + m.prevLabel + ' workbook.' :
+      'No ' + m.prevLabel + ' workbook found — first run: type what was on its way from ADS to Amazon on ' + m.prevEndMDY + ' on "' + tabs.transitStart + '" (leave it empty if nothing).'
   };
 
   // Build every tab in memory (pure), check formulas are Excel-safe, then write.
@@ -98,7 +121,6 @@ function buildEOM() {
   renameEntry_(e.LEDGER, tabs.ledger);
   renameEntry_(e.BIZ, tabs.biz);
   renameEntry_(e.WORK_ORDERS, tabs.workOrders);
-  renameEntry_(e.MANUAL, tabs.manual);
 
   log_('Done in ' + Math.round((new Date() - startedAt) / 1000) + 's: ' + ss.getUrl());
   log_('Open the Checks tab first — anything marked FLAG needs attention.');
@@ -114,6 +136,112 @@ function shopifyOnly() {
   renameEntry_(entry, tabNames_(m).shopify);
   var sell = ensureSellThru_(monthFolder, m, entry, true);
   log_('Done: ' + SpreadsheetApp.openById(sell.id).getUrl());
+}
+
+/**
+ * Rule 15: posts the finished month to Ops Hub 2.0 — wo_log, sku_matrix, sell_thru monthly, inventory_eom.
+ * Run once the workbook is final (yellow tabs filled, Checks clear). Everything is checked before anything is written.
+ */
+function postToOpsHub() {
+  var m = resolveMonth_(CONFIG.MONTH_OVERRIDE, new Date());
+  var tabs = tabNames_(m);
+  var H = CONFIG.OPS_HUB;
+  var monthFolder = subfolder_(parentFolder_(), m.label, true);
+  var wbFile = fileByName_(monthFolder, workbookName_(m));
+  if (!wbFile) throw new Error('No "' + workbookName_(m) + '" in the "' + m.label + '" folder. Run buildEOM first.');
+  var ss = SpreadsheetApp.open(wbFile);
+  function wbValues(name) {
+    var sh = sheetByName_(ss, name);
+    if (!sh) throw new Error('The workbook has no "' + name + '" tab. Run buildEOM again first.');
+    return sh.getDataRange().getValues();
+  }
+  log_('Posting ' + m.label + ' to Ops Hub from ' + ss.getUrl());
+
+  // 15.1: only a clean workbook is posted.
+  var flags = wbValues(tabs.checks).slice(1).filter(function (r) { return /^FLAG/.test(String(r[2])); })
+    .map(function (r) { return r[1] + ' → ' + r[2]; });
+  if (flags.length && !CONFIG.POST_DESPITE_FLAGS) {
+    throw new Error('The Checks tab still has ' + flags.length + ' FLAG(s), so nothing was posted: ' + flags.join(' | ') +
+      '. Fix them and run buildEOM again (or, if you have decided they don\'t matter, set POST_DESPITE_FLAGS: true for this one run).');
+  }
+
+  var res = eomResultsFromValues_({ variance: wbValues(tabs.variance), outbound: wbValues(tabs.outbound),
+    workOrders: wbValues(tabs.workOrders), skuList: wbValues(tabs.skuList) });
+
+  var hub = SpreadsheetApp.openById(H.spreadsheetId);
+  function hubSheet(cfg) {
+    var sh = sheetByName_(hub, cfg.sheetName);
+    if (!sh) throw new Error('Ops Hub has no tab named "' + cfg.sheetName + '". Nothing was posted.');
+    return sh;
+  }
+  var woS = hubSheet(H.woLog), skS = hubSheet(H.skuMatrix), stS = hubSheet(H.sellThru), invS = hubSheet(H.inventory);
+  var stV = stS.getDataRange().getValues(), invV = invS.getDataRange().getValues();
+
+  // Plan everything first (each plan stops loudly on anything odd), then write.
+  var woPlan = planWoLog_(woS.getDataRange().getValues(), res.woLines, m);
+  requireOpsHeaders_(stV, H.sellThru.headerRow - 1, H.sellThru.headers, H.sellThru.sheetName);
+  requireOpsHeaders_(invV, H.inventory.headerRow - 1, H.inventory.headers, H.inventory.sheetName);
+  var stCol = planMonthColumn_(stV, H.sellThru, m);
+  var invCol = planMonthColumn_(invV, H.inventory, m);
+  var stAmounts = {}, invAmounts = {};
+  res.sales.forEach(function (x) { var k = x.channel + '|' + x.sku; stAmounts[k] = (stAmounts[k] || 0) + x.units; });
+  res.inventory.forEach(function (x) { var k = x.location + '|' + x.sku; invAmounts[k] = (invAmounts[k] || 0) + x.qty; });
+  var stInserts = planGroupedRows_(stV, H.sellThru, 0, 2, res.sales.map(function (x) { return { group: x.channel, sku: x.sku }; }));
+  var invInserts = planGroupedRows_(invV, H.inventory, 1, 2, res.inventory.filter(function (x) { return x.qty !== 0; })
+    .map(function (x) { return { group: x.location, sku: x.sku }; }));
+  var skuPlan = planSkuMatrix_(skS.getDataRange().getValues(),
+    res.sales.map(function (x) { return x.sku; }).concat(res.inventory.filter(function (x) { return x.qty !== 0; }).map(function (x) { return x.sku; })), res.descs);
+
+  // 15.2 wo_log
+  insertRowsFromTemplate_(woS, woPlan.afterRow, woPlan.rows, woPlan.textCols, 6, woPlan.afterRow >= 2);
+  log_('  ' + H.woLog.sheetName + ': ' + woPlan.rows.length + ' work-order lines added');
+  // 15.4 sku_matrix
+  insertRowsFromTemplate_(skS, skuPlan.afterRow, skuPlan.rows, skuPlan.textCols, skS.getMaxColumns(), skuPlan.afterRow >= 2);
+  log_('  ' + H.skuMatrix.sheetName + ': ' + (skuPlan.rows.length ? skuPlan.rows.length + ' new SKUs added as ' + H.skuMatrix.newStatus + ': ' +
+    skuPlan.rows.map(function (r) { return r[1]; }).join(', ') : 'no new SKUs'));
+  // 15.3 sell_thru monthly (rows A = Channel, C = SKU; Code and Description formulas copied from the row above)
+  var stNew = postGroupedTab_(stS, H.sellThru, stInserts, stCol, stAmounts, 0, 2, function (it) { return { 1: it.group, 3: it.sku }; }, [3], H.sellThru.firstMonthCol - 1);
+  log_('  ' + H.sellThru.sheetName + ': ' + m.shortLabel + ' column ' + (stCol.isNew ? 'added' : 'updated') + '; ' + stNew + ' new rows');
+  // 15.5 inventory_eom (rows A = Location&SKU, B = Location, C = SKU)
+  var invNew = postGroupedTab_(invS, H.inventory, invInserts, invCol, invAmounts, 1, 2, function (it) { return { 1: it.group + it.sku, 2: it.group, 3: it.sku }; }, [1, 3], H.inventory.firstMonthCol - 1);
+  log_('  ' + H.inventory.sheetName + ': ' + m.shortLabel + ' column ' + (invCol.isNew ? 'added' : 'updated') + '; ' + invNew + ' new rows');
+  SpreadsheetApp.flush();
+  log_('Done: ' + hub.getUrl());
+}
+
+/** Rule 15.3 / 15.5: inserts new rows, adds or finds the month column, writes the month's numbers. Returns the number of new rows. */
+function postGroupedTab_(sheet, cfg, inserts, colPlan, amounts, groupCol, skuCol, rowFor, textCols, width) {
+  var added = 0;
+  inserts.forEach(function (ins) {
+    insertRowsFromTemplate_(sheet, ins.afterRow, ins.items.map(rowFor), textCols, width, ins.afterRow > cfg.headerRow);
+    added += ins.items.length;
+  });
+  var col = colPlan.col;
+  if (colPlan.isNew) {
+    if (sheet.getMaxColumns() < col) sheet.insertColumnsAfter(sheet.getMaxColumns(), col - sheet.getMaxColumns());
+    var rows = sheet.getMaxRows();
+    sheet.getRange(1, colPlan.prevCol, rows, 1).copyTo(sheet.getRange(1, col, rows, 1), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+    var top = sheet.getRange(1, colPlan.prevCol, cfg.headerRow, 1);
+    var prevVals = top.getValues(), prevForms = top.getFormulas();
+    var head = prevVals.map(function (v, i) {
+      if (prevForms[i][0]) return [shiftFormulaCols_(prevForms[i][0], col - colPlan.prevCol)];
+      if (i === cfg.headerRow - 1) return [tabMonthEndSerial_(cfg, colPlan, v[0])];
+      return [v[0]];
+    });
+    sheet.getRange(1, col, cfg.headerRow, 1).setValues(head);
+  }
+  var after = sheet.getDataRange().getValues();
+  var colVals = monthColumnValues_(after, cfg, groupCol, skuCol, amounts);
+  if (colVals.values.length) sheet.getRange(colVals.firstRow, col, colVals.values.length, 1).setValues(colVals.values);
+  return added;
+}
+
+/** The new month's header date (month end), written as a date number in the copied date format. */
+function tabMonthEndSerial_(cfg, colPlan, prevHeader) {
+  var prev = cellSerial_(prevHeader);
+  var ym = serialYearMonth_(prev);
+  var next = monthInfo_(ym.monthIndex === 11 ? ym.year + 1 : ym.year, (ym.monthIndex + 1) % 12);
+  return next.endSerial;
 }
 
 // -----------------------------------------------------------------------------
@@ -305,6 +433,13 @@ function renameEntry_(entry, base) {
   var ext = /\.[A-Za-z0-9]+$/.exec(name);
   var target = base + (ext && entry.file.getMimeType() !== MimeType.GOOGLE_SHEETS ? ext[0] : '');
   if (name !== target) entry.file.setName(target);
+}
+
+/** Rule 5.6: an Ops Hub shipment log's columns (header in row 1). */
+function readOpsLogValues_(hub, cfg) {
+  var sheet = sheetByName_(hub, cfg.sheetName);
+  if (!sheet) throw new Error('Ops Hub has no tab named "' + cfg.sheetName + '".');
+  return sheet.getRange(cfg.columns).getValues();
 }
 
 function readBomSource_() {

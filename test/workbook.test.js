@@ -44,6 +44,8 @@ test('Rule 9.2: ADS block rows come from the sources, not from a typed list', ()
   assert.deepEqual(ads, ['10030', '20001', '50001', '51002', '80030', '80090', 'A0030']);
   assert.ok(!ads.includes('70001'), 'kit components that are not at ADS must not create rows');
   assert.deepEqual(plain(built.blocks.find((b) => b.kind === 'AMZ').skus), ['50001', 'A0030', 'A80004']);
+  assert.deepEqual(plain(built.blocks.find((b) => b.kind === 'TRANSIT').skus), ['50001', 'A0030']);
+  assert.deepEqual(plain(built.blocks.map((b) => b.label)), ['ADS', 'In Transit to AMZ', 'Amazon', 'VitaPros', 'VitaQuest']);
   assert.deepEqual(plain(built.blocks.filter((b) => b.kind === 'MFG').map((b) => b.label)), ['VitaPros', 'VitaQuest']);
 });
 
@@ -51,12 +53,12 @@ test('Rule 9.3 ADS: begin / receiving / sold (bundles split, CX included, kits) 
   const expect = {
     // sku: [begin, recv, sold, expected, actual, delta]
     '10030': [10, 5, 3, 12, 5, -7],
-    '80030': [100, 0, 17, 83, 90, 7],      // 1 CX + 1 TikTok bundle + 5 starter kits + 10 Amazon kits
+    '80030': [100, 0, 20, 80, 90, 10],     // 1 CX + 1 TikTok bundle + 5 starter kits + 10 Amazon kits + 3 Samples (manualorder_log)
     '80090': [200, 0, 5, 195, 170, -25],   // "80090,80090" x2 lines = 4, plus 1 single
     '51002': [30, 0, 2, 28, 28, 0],        // CX line of a replacement order + TikTok bundle
-    '50001': [50, 10, 2, 58, 48, -10],     // PO receipt; MANUAL order
+    '50001': [50, 10, 2, 58, 48, -10],     // PO receipt; Marketing row in manualorder_log (last month's row ignored)
     '20001': [40, 0, 5, 35, 35, 0],        // used by 5 starter kits
-    'A0030': [20, 10, 15, 15, 15, 0]       // kitted 4 + 6; 15 sent to Amazon
+    'A0030': [20, 10, 15, 15, 15, 0]       // kitted 4 + 6; 15 sent to Amazon (amz_log)
   };
   for (const [sku, e] of Object.entries(expect)) {
     const r = findRow(T.variance, 'ADS', sku);
@@ -70,6 +72,17 @@ test('Rule 9.3 Amazon: starting = last month\'s last day; actual = last day of t
     const r = findRow(T.variance, 'Amazon', sku);
     assert.deepEqual(['E', 'F', 'G', 'H', 'I', 'J'].map((c) => val(T.variance, r, c)), e, 'Amazon ' + sku);
   }
+});
+
+test('Rule 9.5 In Transit to AMZ: start + shipped (amz_log) − received by Amazon (ledger Receipts)', () => {
+  const expect = { 'A0030': [8, 15, 15, 8, 8, 0], '50001': [5, 0, 5, 0, 0, 0] };
+  for (const [sku, e] of Object.entries(expect)) {
+    const r = findRow(T.variance, 'In Transit to AMZ', sku);
+    assert.deepEqual(['E', 'F', 'G', 'H', 'I', 'J'].map((c) => val(T.variance, r, c)), e, 'In Transit ' + sku);
+  }
+  const v = findRow(T.valuation, 'In Transit to AMZ', 'A0030');
+  close(val(T.valuation, v, 'J'), 8 * 2.87);
+  assert.equal(sheet(T.variance).values[findRow(T.variance, 'In Transit to AMZ', 'A0030') - 1][3], 'Ending Inventory');
 });
 
 test('Rule 9.3 MFG: Used is calculated, so delta is 0', () => {
@@ -91,11 +104,11 @@ test('Rule 9.3 costs and missing COGS', () => {
 test('Rule 9.1: subtotals add up their own block only', () => {
   const r = findRow(T.variance, 'Subtotal – ADS');
   assert.equal(val(T.variance, r, 'E'), 10 + 100 + 200 + 30 + 50 + 40 + 20);
-  assert.equal(val(T.variance, r, 'J'), -7 + 7 - 25 + 0 - 10 + 0 + 0);
+  assert.equal(val(T.variance, r, 'J'), -7 + 10 - 25 + 0 - 10 + 0 + 0);
 });
 
 test('Rule 10: valuation totals box', () => {
-  const ending = 5 * 7.19 + 90 * 2.96 + 170 * 6.90 + 28 * 0.45 + 48 * 2.10 + 35 * 0.64 + 15 * 2.87 + 115 * 2.87 + 4 * 2.10;
+  const ending = 5 * 7.19 + 90 * 2.96 + 170 * 6.90 + 28 * 0.45 + 48 * 2.10 + 35 * 0.64 + 15 * 2.87 + 115 * 2.87 + 4 * 2.10 + 8 * 2.87; // last: in transit
   const raw = 300 * 197.96 + 120 * 197.96;
   close(val(T.valuation, 2, 'B'), ending);
   close(val(T.valuation, 3, 'B'), raw);
@@ -105,18 +118,21 @@ test('Rule 10: valuation totals box', () => {
   assert.equal(val(T.valuation, a8, 'J'), 'NO COST');
 });
 
-test('Rule 11: outbound units by channel (order-level tags, manual marketing, Amazon)', () => {
+test('Rule 11: outbound units by channel (order-level tags, manualorder_log channels incl. Samples, Amazon)', () => {
   const row = (sku) => findRow(T.outbound, sku);
-  const units = (sku) => ['C', 'E', 'G', 'I', 'K', 'M'].map((c) => val(T.outbound, row(sku), c)); // DTC, Mktg, CX, TikTok, Amazon, All
-  assert.deepEqual(units('10030'), [3, 0, 0, 0, 0, 3]);
-  assert.deepEqual(units('80090,80090'), [2, 0, 0, 0, 0, 2]);
-  assert.deepEqual(units('51002'), [0, 0, 1, 0, 0, 1]);           // 2nd line of a Replacement order → CX
-  assert.deepEqual(units('80030,51002'), [0, 0, 0, 1, 0, 1]);
-  assert.deepEqual(units('80090'), [0, 1, 0, 0, 0, 1]);           // "Free sample, TikTok" → Marketing (first match)
-  assert.deepEqual(units('50001'), [0, 2, 0, 0, 1, 3]);           // MANUAL order + Amazon
-  assert.deepEqual(units('A0030'), [0, 0, 0, 0, 20, 20]);
+  const U = ['C', 'E', 'G', 'I', 'K', 'M', 'O']; // DTC, Mktg, CX, TikTok, Samples, Amazon, All
+  assert.deepEqual(plain(sheet(T.outbound).values[2].filter((x) => x)), ['DTC', 'Marketing', 'CX', 'TikTok', 'Samples', 'Amazon', 'All Channels']);
+  const units = (sku) => U.map((c) => val(T.outbound, row(sku), c));
+  assert.deepEqual(units('10030'), [3, 0, 0, 0, 0, 0, 3]);           // the unshipped CX row in manualorder_log is not counted
+  assert.deepEqual(units('80090,80090'), [2, 0, 0, 0, 0, 0, 2]);
+  assert.deepEqual(units('51002'), [0, 0, 1, 0, 0, 0, 1]);           // 2nd line of a Replacement order → CX
+  assert.deepEqual(units('80030,51002'), [0, 0, 0, 1, 0, 0, 1]);
+  assert.deepEqual(units('80090'), [0, 1, 0, 0, 0, 0, 1]);           // "Free sample, TikTok" → Marketing (first match)
+  assert.deepEqual(units('80030'), [0, 0, 1, 0, 3, 0, 4]);           // Shopify CX + Samples from manualorder_log
+  assert.deepEqual(units('50001'), [0, 2, 0, 0, 0, 1, 3]);           // manualorder_log Marketing + Amazon
+  assert.deepEqual(units('A0030'), [0, 0, 0, 0, 0, 20, 20]);         // amz_log transfers are not sales
   const total = findRow(T.outbound, 'TOTAL');
-  assert.deepEqual(['C', 'E', 'G', 'I', 'K', 'M'].map((c) => val(T.outbound, total, c)), [5, 3, 2, 1, 25, 36]);
+  assert.deepEqual(U.map((c) => val(T.outbound, total, c)), [5, 3, 2, 1, 3, 25, 39]);
   close(val(T.outbound, row('80090,80090'), 'D'), 2 * 13.80);
 });
 
@@ -129,6 +145,11 @@ test('Rule 12: checks flag what is wrong and pass what is right', () => {
   assert.equal(result('Rows where Expected Ending Inventory is negative'), 'OK');
   assert.equal(result('Inventory Valuation total = sum of block subtotals'), 'OK');
   assert.equal(result('MFG Inventory filled in'), 'OK');
+  assert.match(result('Ops Hub shipment logs'), /^CHECK: rows with no Ship Date/);
+  const logs = rows.find((x) => x[1] === 'Ops Hub shipment logs')[3];
+  assert.match(logs, /manualorder_log: 2 rows shipped 09\/01\/2026–09\/30\/2026; 1 rows with no Ship Date \(not counted\); 1 rows from other months/);
+  assert.match(logs, /amz_log: 1 rows shipped/);
+  assert.equal(result('In Transit to AMZ starting balance'), 'OK');
   const map = rows.find((x) => x[1] === 'AMZ SKU Map entries added this run');
   assert.match(map[3], /A80002 \(B2\) → A80004/);
   assert.match(map[3], /A0030 - TEMP SKU \(B1\) → A0030/);

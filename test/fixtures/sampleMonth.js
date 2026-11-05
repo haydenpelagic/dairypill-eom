@@ -62,9 +62,15 @@ function sampleRaw(year, monthIndex) {
     ['#3', 'c@x', 'paid', '1', 'Tin bundle', '0', '80030,51002', 'TikTok-FBM', 'tiktok'],
     ['#4', 'd@x', 'paid', '1', '90 refill', '0', '80090', 'Free sample, TikTok', 'tiktok'],
     ['#5', 'e@x', 'paid', '1', 'Gift card', '25', '', '', 'web']];
-  const manual = [['CUSTOMER', 'ORDER', 'SKU', 'QUANTITY', 'DATE'],
-    ['MANUAL', '141', '50001', '2', (monthIndex + 1) + '/2/' + year],
-    ['AMAZON', '142', 'A0030', '15', (monthIndex + 1) + '/17/' + year]];
+  // Ops Hub shipment logs (Rule 5.6), as Google Sheets returns them: SKUs text (column is Plain text), dates as text here.
+  const d = (day) => mdy(year, monthIndex, day);
+  const manualLog = [['ADS Order Number', 'Channel', 'SKU', 'Quantity', 'Order Date', 'Ship Date'],
+    ['141', 'Marketing', '50001', 2, d(1), d(2)],
+    ['143', 'samples', '80030', 3, d(5), d(6)],              // channel matched without regard to case
+    ['144', 'CX', '10030', 1, d(last), ''],                  // not shipped yet: not counted
+    ['140', 'Marketing', '50001', 4, mdy(py, pm, 3), mdy(py, pm, 4)]]; // last month: ignored
+  const amzLog = [['ADS Order Number', 'Amazon Number', 'SKU', 'Quantity', 'Order Date', 'Ship Date'],
+    ['142', 'FBA15XYZ', 'A0030', 15, d(16), d(17)]];
   const bomValues = [
     ['BOM', '', '', '', ''],
     ['Parent SKU', 'Parent Desc', 'Child SKU', 'Child Desc', 'Qty'],
@@ -88,7 +94,7 @@ function sampleRaw(year, monthIndex) {
     cogs('80090,80090', 11.56, 0.16, 2.08), cogs('80030,51002', 3.05, 0.01, 0.35)]; // A80004 deliberately missing
   const yyyymm = year + '-' + String(monthIndex + 1).padStart(2, '0');
   const woHtml = fs.readFileSync(path.join(__dirname, 'workorders_sample.html'), 'utf8').replace(/2026-09/g, yyyymm);
-  return { adsStart, adsEnd, amzStart, ledger, biz, shopify, manual, bomValues, cogsHeader: COGS_HEADER, cogsRows, woHtml };
+  return { adsStart, adsEnd, amzStart, ledger, biz, shopify, manualLog, amzLog, bomValues, cogsHeader: COGS_HEADER, cogsRows, woHtml };
 }
 
 function sampleInputs(ctx, overrides) {
@@ -105,7 +111,10 @@ function sampleInputs(ctx, overrides) {
     amzStart: ctx.ledgerLastDateRows_(t(raw.amzStart, 'start ledger'), m.prevEndSerial, 'start ledger'),
     biz: t(raw.biz, 'biz'),
     shopify: t(raw.shopify, 'shopify'),
-    manual: t(raw.manual, 'manual'),
+    manualLog: ctx.parseOpsLog_(raw.manualLog, 'manual', m),
+    amzLog: ctx.parseOpsLog_(raw.amzLog, 'amz', m),
+    transitStart: [['50001', 5], ['A0030', 8]], // on its way to Amazon on 8/31
+    transitStartFromPrev: true,
     workOrders: ctx.parseWorkOrdersHtml_(raw.woHtml, m),
     bomValues: raw.bomValues,
     cogs: { header: raw.cogsHeader, rows: raw.cogsRows },
@@ -115,7 +124,7 @@ function sampleInputs(ctx, overrides) {
     mfgStartFromPrev: true,
     mfgInv: [['VitaQuest', '70003', 50, 120], ['VitaPros', '70003', 300, 300]],
     adsReceipts: [['PO-1', '50001', 10]],
-    sources: { startSources: 'test', shopifySource: 'test', mfgStartSource: 'test' },
+    sources: { startSources: 'test', shopifySource: 'test', mfgStartSource: 'test', transitStartSource: 'test' },
     ignoredFiles: []
   };
   return Object.assign(inputs, overrides || {});

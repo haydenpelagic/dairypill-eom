@@ -129,3 +129,26 @@ function orderTabs_(ss, names) {
     ss.moveActiveSheet(i + 1);
   });
 }
+
+/**
+ * Rule 15: inserts rows after `afterRow` and fills them like dragging the row above down:
+ * `rows` = [{columnNumber: value}] for the cells we know; every other cell in the first `width`
+ * columns gets the row-above's formula (references moved down), if it has one.
+ */
+function insertRowsFromTemplate_(sheet, afterRow, rows, textCols, width, copyFormulas) {
+  if (!rows.length) return;
+  var n = rows.length;
+  sheet.insertRowsAfter(afterRow, n); // new rows take the formatting of the row above
+  var tmpl = copyFormulas && afterRow >= 1 ? sheet.getRange(afterRow, 1, 1, width).getFormulas()[0] : [];
+  var grid = rows.map(function (row, i) {
+    var out = [];
+    for (var c = 1; c <= width; c++) {
+      if (row.hasOwnProperty(c)) out.push(row[c]);
+      else if (tmpl[c - 1]) out.push(shiftFormulaRows_(tmpl[c - 1], i + 1));
+      else out.push('');
+    }
+    return out;
+  });
+  (textCols || []).forEach(function (c) { sheet.getRange(afterRow + 1, c, n, 1).setNumberFormat('@'); });
+  sheet.getRange(afterRow + 1, 1, n, width).setValues(grid);
+}

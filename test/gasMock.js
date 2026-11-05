@@ -58,6 +58,25 @@ class MockRange {
     }
     return out;
   }
+  /** Formulas as text ('' where a cell holds a value), like Range.getFormulas(). */
+  getFormulas() {
+    const out = [];
+    for (let i = 0; i < this.nr; i++) {
+      const row = [];
+      for (let j = 0; j < this.nc; j++) { const v = this.sheet.raw(this.r + i, this.c + j); row.push(typeof v === 'string' && v.startsWith('=') ? v : ''); }
+      out.push(row);
+    }
+    return out;
+  }
+  /** copyTo(dest, PASTE_FORMAT): copies number formats only (the only use in the script). */
+  copyTo(dest, type) {
+    if (type !== 'PASTE_FORMAT') throw new Error('mock copyTo supports PASTE_FORMAT only');
+    for (let i = 0; i < this.nr; i++) for (let j = 0; j < this.nc; j++) {
+      const f = this.sheet.formats[(this.r + i) + ',' + (this.c + j)];
+      const key = (dest.r + i) + ',' + (dest.c + j);
+      if (f === undefined) delete dest.sheet.formats[key]; else dest.sheet.formats[key] = f;
+    }
+  }
   each(fn) { for (let i = 0; i < this.nr; i++) for (let j = 0; j < this.nc; j++) fn(this.r + i, this.c + j); }
   setFontWeight() { return this; }
   setFontSize() { return this; }
@@ -81,6 +100,7 @@ class MockSheet {
   raw(r, c) { const row = this.cells[r - 1]; return row && row[c - 1] !== undefined ? row[c - 1] : ''; }
   computed(r, c) {
     const v = this.raw(r, c);
+    if (typeof v === 'string' && v.startsWith('=') && this.ss.customEval) return this.ss.customEval(this, r, c, v);
     if (typeof v === 'string' && v.startsWith('=')) {
       const val = this.ss.engine().value(this.name, r, c);
       return val && typeof val === 'object' && 'error' in val ? '#' + val.error : val;
@@ -101,7 +121,21 @@ class MockSheet {
   }
   getMaxRows() { return this.maxRows; }
   getMaxColumns() { return this.maxCols; }
-  insertRowsAfter(_, n) { this.maxRows += n; }
+  /** Like Sheets: rows below `after` move down; new rows take the formats of row `after`. */
+  insertRowsAfter(after, n) {
+    while (this.cells.length < after) this.cells.push([]);
+    const fresh = Array.from({ length: n }, () => []);
+    this.cells.splice(after, 0, ...fresh);
+    const moved = {};
+    for (const [k, f] of Object.entries(this.formats)) {
+      const [r, c] = k.split(',').map(Number);
+      moved[(r > after ? r + n : r) + ',' + c] = f;
+      if (r === after) for (let i = 1; i <= n; i++) moved[(after + i) + ',' + c] = f;
+    }
+    this.formats = moved;
+    this.maxRows += n;
+    this.ss.dirty = true;
+  }
   insertColumnsAfter(_, n) { this.maxCols += n; }
   setFrozenRows() {}
   setTabColor() {}
@@ -168,6 +202,7 @@ function createGas(opts) {
       open: (file) => { if (!file.ss) throw new Error('Not a spreadsheet: ' + file.name); return file.ss; },
       openById: (id) => { const f = drive.files.get(id); if (!f || !f.ss) throw new Error('No spreadsheet ' + id); return f.ss; },
       flush: () => {},
+      CopyPasteType: { PASTE_FORMAT: 'PASTE_FORMAT' },
       newConditionalFormatRule: ruleBuilder,
       BorderStyle: { SOLID: 'solid' }
     },
