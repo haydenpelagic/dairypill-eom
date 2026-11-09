@@ -11,7 +11,8 @@ The owner is non-technical: explain in plain English, never ask them to review c
 ## Layout
 - `src/Config.gs` — every setting (folder ID, channel rules, SKU renames, column names).
 - `src/Logic.gs` — pure functions: parsing, SKU lists, and every formula. No Google calls. All tested in Node.
-- `src/Main.gs` — entry points `buildEOM()` / `shopifyOnly()`; Drive reading, starting balances.
+- `src/Main.gs` — entry points `buildEOM()` / `shopifyOnly()` (thin wrappers over `buildEOMFor_(month)` / `shopifyOnlyFor_(month)`), `preflight_`; Drive reading, starting balances.
+- `src/Studio.gs` — Workspace Studio steps (Rule 1.5), wired from `appsscript.json` → `addOns.flows`. Check quickly, queue a one-off trigger, build, email the result. Callback names in the manifest must match functions here (a test checks).
 - `src/Sheets.gs` — writing sheet models to Google Sheets.
 - `dist/` — exactly what clasp uploads to Apps Script: `DairyPill_EOM.gs` (generated bundle) + `appsscript.json` (copied). Never edit by hand (`npm run bundle`; a test fails if stale).
 - `.clasp.json` — Apps Script project (owned by the DairyPill account), `rootDir: dist`.

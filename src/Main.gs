@@ -2,12 +2,22 @@
 // DairyPill EOM Report — ENTRY POINTS
 //   buildEOM()    builds (or rebuilds) the month's EOM workbook      (Rules 1–12)
 //   shopifyOnly() makes only the standalone Shopify Sell Thru file   (Rule 13)
-// Pick the function in the toolbar dropdown and press Run.
+// Pick the function in the toolbar dropdown and press Run — or start it from a
+// Workspace Studio flow (Studio.gs, Rule 1.5).
 // =============================================================================
 
 function buildEOM() {
+  return buildEOMFor_(CONFIG.MONTH_OVERRIDE);
+}
+
+function shopifyOnly() {
+  return shopifyOnlyFor_(CONFIG.MONTH_OVERRIDE);
+}
+
+/** Rule 1.2: monthText is "September 2026", or blank for last calendar month. Returns the workbook link. */
+function buildEOMFor_(monthText) {
   var startedAt = new Date();
-  var m = resolveMonth_(CONFIG.MONTH_OVERRIDE, startedAt);
+  var m = resolveMonth_(monthText, startedAt);
   var tabs = tabNames_(m);
   var parent = parentFolder_();
   var monthFolder = subfolder_(parent, m.label, true);
@@ -105,15 +115,36 @@ function buildEOM() {
   return ss.getUrl();
 }
 
-function shopifyOnly() {
-  var m = resolveMonth_(CONFIG.MONTH_OVERRIDE, new Date());
+/** Rule 13: only the standalone Sell Thru file. Returns its link. */
+function shopifyOnlyFor_(monthText) {
+  var m = resolveMonth_(monthText, new Date());
   var monthFolder = subfolder_(parentFolder_(), m.label, true);
   var scan = scanFolder_(monthFolder, m);
   requireOneOfEach_(scan, ['SHOPIFY'], m.label);
   var entry = scan.byType.SHOPIFY[0];
   renameEntry_(entry, tabNames_(m).shopify);
   var sell = ensureSellThru_(monthFolder, m, entry, true);
-  log_('Done: ' + SpreadsheetApp.openById(sell.id).getUrl());
+  var url = SpreadsheetApp.openById(sell.id).getUrl();
+  log_('Done: ' + url);
+  return url;
+}
+
+/**
+ * Rule 1.4 / 1.5: the quick checks a Studio flow runs before queuing a build — month, folder,
+ * one of each file, starting balances. Reads only; changes nothing. Returns the month label.
+ */
+function preflight_(kind, monthText) {
+  var m = resolveMonth_(monthText, new Date());
+  var parent = parentFolder_();
+  var monthFolder = subfolder_(parent, m.label, true);
+  var scan = scanFolder_(monthFolder, m);
+  if (kind === 'SHOPIFY') {
+    requireOneOfEach_(scan, ['SHOPIFY'], m.label);
+  } else {
+    requireOneOfEach_(scan, ['ADS', 'LEDGER', 'BIZ', 'SHOPIFY', 'MANUAL', 'WORK_ORDERS'], m.label);
+    findStartingBalances_(parent, monthFolder, m);
+  }
+  return { label: m.label };
 }
 
 // -----------------------------------------------------------------------------

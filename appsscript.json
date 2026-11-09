@@ -2,5 +2,99 @@
   "timeZone": "America/New_York",
   "dependencies": {},
   "exceptionLogging": "STACKDRIVER",
-  "runtimeVersion": "V8"
+  "runtimeVersion": "V8",
+  "addOns": {
+    "common": {
+      "name": "DairyPill EOM",
+      "logoUrl": "https://www.gstatic.com/images/branding/product/2x/apps_script_48dp.png"
+    },
+    "flows": {
+      "workflowElements": [
+        {
+          "id": "buildDairyPillEOM",
+          "state": "ACTIVE",
+          "name": "Build DairyPill EOM",
+          "description": "Checks the month folder, then builds the DairyPill EOM workbook in the background and emails you the link.",
+          "version": {
+            "current_version": 1,
+            "min_version": 1
+          },
+          "workflowAction": {
+            "inputs": [
+              {
+                "id": "month",
+                "description": "Month to build, e.g. October 2026 (blank = last month)",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "id": "status",
+                "description": "STARTED (building in the background) or DONE",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              },
+              {
+                "id": "message",
+                "description": "What happened, in plain English",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              }
+            ],
+            "onConfigFunction": "onStudioConfigEOM",
+            "onExecuteFunction": "onStudioRunEOM"
+          }
+        },
+        {
+          "id": "buildDairyPillSellThru",
+          "state": "ACTIVE",
+          "name": "Build DairyPill Shopify Sell Thru",
+          "description": "Checks the month folder, then builds only the Shopify Sell Thru file in the background and emails you the link.",
+          "version": {
+            "current_version": 1,
+            "min_version": 1
+          },
+          "workflowAction": {
+            "inputs": [
+              {
+                "id": "month",
+                "description": "Month to build, e.g. October 2026 (blank = last month)",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "id": "status",
+                "description": "STARTED (building in the background) or DONE",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              },
+              {
+                "id": "message",
+                "description": "What happened, in plain English",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              }
+            ],
+            "onConfigFunction": "onStudioConfigShopify",
+            "onExecuteFunction": "onStudioRunShopify"
+          }
+        }
+      ]
+    }
+  }
 }
