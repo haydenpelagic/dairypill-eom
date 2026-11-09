@@ -218,3 +218,68 @@ test('Rule 12.3: an ASIN or MSKU mapped to two different SKUs is flagged', () =>
   assert.equal(row(same)[2], 'OK', 'two MSKUs on one ASIN is fine when they map to the same SKU');
   assert.deepEqual(plain(L.skuMapConflicts_([['M1', 'X', 'S1', ''], ['M1', 'Y', 'S2', '']])), [{ kind: 'MSKU', key: 'M1', skus: ['S1', 'S2'] }]);
 });
+
+test('Rule 5.4a: cancelled, and refunded/voided-and-never-shipped Shopify lines are not counted', () => {
+  const v = sheet(T.shopify).values, h = v[0];
+  const counted = v.slice(1).map((r, i) => [r[0], r[6], wb.value(T.shopify, i + 2, h.indexOf('Counted') + 1)]);
+  assert.deepEqual(plain(counted.filter((x) => x[2] !== 'Yes')), [
+    ['#6', '80090', 'No - cancelled'], ['#7', '80090', 'No - refunded, not shipped'], ['#7', '51002', 'No - refunded, not shipped']]);
+  // 80090 sold stays 5 at ADS (the 5 cancelled + 2 refunded units are ignored); 51002 stays 2
+  assert.equal(val(T.variance, findRow(T.variance, 'ADS', '80090'), 'G'), 5);
+  assert.equal(val(T.variance, findRow(T.variance, 'ADS', '51002'), 'G'), 2);
+  const ch = sheet(T.checks).values;
+  const r = ch.findIndex((x) => x[0] === '5.4a') + 1;
+  assert.equal(wb.value(T.checks, r, 3), 'INFO: 3 lines / 11 units not counted');
+  // refunded but SHIPPED still counts (the product left ADS); partially refunded counts
+  const H = ['Name', 'Lineitem quantity', 'Lineitem sku', 'Tags', 'Financial Status', 'Cancelled at', 'Lineitem fulfillment status'];
+  const t = { header: H, rows: [['#1', '1', 'A', '', 'refunded', '', 'fulfilled'], ['#2', '2', 'B', '', 'partially_refunded', '', ''],
+    ['#3', '3', 'C', '', 'voided', '', ''], ['#3', '4', 'D', '', '', '', 'Fulfilled']] };
+  assert.deepEqual(plain(L.shopifyLinesCounted_(t)), [true, true, false, true]);
+  const w = workbookFromModels([L.shopifyModel_('S', t)]);
+  assert.deepEqual([2, 3, 4, 5].map((row) => w.value('S', row, 12)), ['Yes', 'Yes', 'No - voided, not shipped', 'Yes']);
+  assert.deepEqual([2, 3, 4, 5].map((row) => w.value('S', row, 13)), [1, 2, 0, 4]);
+});
+
+test('Rule 5.6: only Manual Orders rows shipped inside the month count', () => {
+  const v = sheet(T.manual).values;
+  const inMonth = v.slice(1).map((r, i) => [r[1], wb.value(T.manual, i + 2, v[0].indexOf('In Month') + 1)]);
+  assert.deepEqual(plain(inMonth), [['141', 'Yes'], ['142', 'Yes'], ['140', 'No'], ['143', 'No']]);
+  assert.equal(val(T.variance, findRow(T.variance, 'ADS', '50001'), 'G'), 2, 'the 99 units shipped last month are not counted');
+  const ch = sheet(T.checks).values;
+  assert.equal(wb.value(T.checks, ch.findIndex((x) => x[0] === '5.6') + 1, 3), 'INFO: 2 rows not counted');
+  const raw = sampleInputs(L).manual;
+  const noDate = { header: raw.header, rows: [['MANUAL', '1', '50001', '1', '']] };
+  assert.throws(() => L.buildWorkbookModel_(sampleInputs(L, { manual: noDate })), /Manual Orders row 2 \(SKU 50001\) has no DATE/);
+  assert.equal(L.parseMDY_('2026-09-05'), L.parseMDY_('09/05/2026'));
+});
+
+test('Rule 9.3 / 12.13: Amazon Sold = shipped; Delta is split into ledger events; ordered vs shipped', () => {
+  const a = findRow(T.variance, 'Amazon', 'A80004');
+  assert.deepEqual(['E', 'F', 'G', 'H', 'I', 'J'].map((c) => val(T.variance, a, c)), [30, 0, 4, 26, 25, -1]);
+  const ch = sheet(T.checks).values;
+  const hdr = ch.findIndex((x) => x[0] === 'Amazon SKU');
+  const head = ch[hdr];
+  const tableRow = (sku) => { const i = ch.findIndex((x, j) => j > hdr && x[0] === sku) + 1; return (name) => wb.value(T.checks, i, head.indexOf(name) + 1); };
+  const a8 = tableRow('A80004');
+  assert.deepEqual(['Delta (Variance Overview)', 'Lost', 'Unexplained', 'Units Ordered (Business Report)', 'Units Shipped (ledger)'].map(a8), [-1, -1, 0, 4, 4]);
+  const a3 = tableRow('A0030');
+  assert.deepEqual(['Delta (Variance Overview)', 'Transfers not matched by in-transit', 'Unexplained', 'Units Shipped (ledger)'].map(a3), [0, 0, 0, 20]);
+  const res = (label) => wb.value(T.checks, ch.findIndex((x) => x[1] === label) + 1, 3);
+  assert.equal(res('Amazon Delta explained by ledger events'), 'OK');
+  assert.equal(res('Amazon units ordered vs shipped (Sold / Used uses shipped)'), 'INFO: ordered 25 / shipped 25');
+  // a balance change with no ledger event behind it is flagged
+  const raw = sampleInputs(L).ledger;
+  const last = raw.rows[raw.rows.length - 1].slice(); last[18] = '11'; // 50001 ending 4 → 11 with no event
+  const b = L.buildWorkbookModel_(sampleInputs(L, { ledger: { header: raw.header, rows: raw.rows.slice(0, -1).concat([last]) } }));
+  const w2 = workbookFromModels(b.sheets);
+  const c2 = b.sheets.find((s) => s.name === b.tabs.checks).values;
+  assert.equal(w2.value(b.tabs.checks, c2.findIndex((x) => x[1] === 'Amazon Delta explained by ledger events') + 1, 3),
+    'FLAG: 1 SKU(s) have Delta the ledger does not explain — see table below');
+});
+
+test('Rule 4.2: Amazon Beginning/Ending include units travelling between Amazon warehouses', () => {
+  const f = sheet(T.variance).values[findRow(T.variance, 'Amazon', 'A0030') - 1];
+  assert.match(f[4], /Starting.*|SUMIFS.*\+SUMIFS.*\+SUMIFS/);
+  assert.match(f[8], /^=SUMIFS\(.*MAX.*\)\+SUMIFS\(.*MAX.*\)$/);
+  assert.equal(val(T.variance, findRow(T.variance, 'Amazon', 'A0030'), 'I'), 115, '107 on shelf + 5 expired + 3 in transit');
+});

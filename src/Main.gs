@@ -178,11 +178,19 @@ function writeWorkbook_(ss, wb) {
   SpreadsheetApp.flush();
 }
 
-/** Rule 13: the standalone Shopify Sell Thru file. Reused if it is newer than the CSV. */
+/** A Sell Thru file built by an older version of the script lacks the Counted Qty column (Rule 5.4a) and is rebuilt. */
+function sellThruIsCurrent_(file) {
+  var sh = sheetByName_(SpreadsheetApp.open(file), 'Order Export');
+  if (!sh) return false;
+  var header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
+  return header[header.length - 1] === 'Counted Qty';
+}
+
+/** Rule 13: the standalone Shopify Sell Thru file. Reused if it is newer than the CSV (and built by this version). */
 function ensureSellThru_(monthFolder, m, entry, force) {
   var name = sellThruName_(m);
   var file = fileByName_(monthFolder, name);
-  if (file && !force && file.getLastUpdated() >= entry.file.getLastUpdated()) {
+  if (file && !force && file.getLastUpdated() >= entry.file.getLastUpdated() && sellThruIsCurrent_(file)) {
     return { id: file.getId(), reused: true };
   }
   var ss = file ? SpreadsheetApp.open(file) : createSpreadsheetIn_(monthFolder, name);

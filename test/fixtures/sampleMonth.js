@@ -18,14 +18,18 @@ const LEDGER_HEADER = ['Date', 'FNSKU', 'ASIN', 'MSKU', 'Title', 'Disposition', 
   'In Transit Between Warehouses', 'Receipts', 'Customer Shipments', 'Customer Returns', 'Vendor Returns',
   'Warehouse Transfer In/Out', 'Found', 'Lost', 'Damaged', 'Disposed', 'Other Events', 'Ending Warehouse Balance',
   'Unknown Events', 'Location', 'Store'];
-function led(date, asin, msku, disp, receipts, ending, fc, starting) {
-  return [date, asin, asin, msku, 'Title ' + msku, disp, String(starting || 0), '0', String(receipts), '0', '0', '0', '0', '0', '0', '0', '0', '0',
-    String(ending), '0', fc, ''];
+// x = optional { ship, transfer, inTransit, lost } (Customer Shipments are negative, as in Amazon's file)
+function led(date, asin, msku, disp, receipts, ending, fc, starting, x) {
+  x = x || {};
+  return [date, asin, asin, msku, 'Title ' + msku, disp, String(starting || 0), String(x.inTransit || 0), String(receipts), String(x.ship || 0),
+    '0', '0', String(x.transfer || 0), '0', String(x.lost || 0), '0', '0', '0', String(ending), '0', fc, ''];
 }
 const mdy = (y, mi, d) => String(mi + 1).padStart(2, '0') + '/' + String(d).padStart(2, '0') + '/' + y;
 const lastDay = (y, mi) => new Date(Date.UTC(y, mi + 1, 0)).getUTCDate();
 
-const SHOP_HEADER = ['Name', 'Email', 'Financial Status', 'Lineitem quantity', 'Lineitem name', 'Lineitem price', 'Lineitem sku', 'Tags', 'Source'];
+const SHOP_HEADER = ['Name', 'Email', 'Financial Status', 'Lineitem quantity', 'Lineitem name', 'Lineitem price', 'Lineitem sku', 'Tags', 'Source',
+  'Cancelled at', 'Lineitem fulfillment status'];
+const F = ['', 'fulfilled']; // not cancelled, shipped
 const COGS_HEADER = ['Trim', 'Lineitem sku', 'Description', 'Categorization', 'COGS / Unit', 'Freight / Unit', 'Tariffs / Unit', 'Total / Unit'];
 
 /** Raw file contents (arrays) for a month. Same movements every month; dates follow the month. */
@@ -43,14 +47,17 @@ function sampleRaw(year, monthIndex) {
     led(mdy(py, pm, pLast), 'B2', 'A80002', 'SELLABLE', 0, 30, 'FC1')];
   const ledger = [LEDGER_HEADER];
   for (let d = 1; d <= last; d++) {
-    ledger.push(led(mdy(year, monthIndex, d), 'B1', 'A0030 - TEMP SKU', 'SELLABLE', d === 10 ? 15 : 0, d === last ? 110 : 900 + d, 'FC1', d === 1 ? 100 : 0));
+    // A0030 @ FC1: +15 received on the 10th, 20 shipped on the 15th, 3 sent to another Amazon warehouse on the 20th
+    // and still travelling at month end (In Transit 3). Ending 107 + 5 expired + 3 in transit = 115 (Rule 9.3).
+    ledger.push(led(mdy(year, monthIndex, d), 'B1', 'A0030 - TEMP SKU', 'SELLABLE', d === 10 ? 15 : 0, d === last ? 107 : 900 + d, 'FC1', d === 1 ? 100 : 0,
+      { ship: d === 15 ? -20 : 0, transfer: d === 20 ? -3 : 0, inTransit: d >= 20 ? 3 : 0 }));
   }
   // Rule 4.2: Amazon Beginning = Starting Warehouse Balance on the 1st (A0030 100 + 20 = 120, A80002 30) — ties to amzStart above.
   ledger.push(led(mdy(year, monthIndex, 1), 'B1', 'A0030 - TEMP SKU', 'SELLABLE', 0, 0, 'FC2', 20));
   ledger.push(led(mdy(year, monthIndex, 1), 'B2', 'A80002', 'SELLABLE', 0, 30, 'FC1', 30));
   ledger.push(led(mdy(year, monthIndex, last), 'B1', 'A0030 - TEMP SKU', 'EXPIRED', 0, 5, 'FC2'));
-  ledger.push(led(mdy(year, monthIndex, last), 'B2', 'A80002', 'SELLABLE', 0, 25, 'FC1'));
-  ledger.push(led(mdy(year, monthIndex, last), 'B3', '50001', 'SELLABLE', 5, 4, 'FC3'));
+  ledger.push(led(mdy(year, monthIndex, last), 'B2', 'A80002', 'SELLABLE', 0, 25, 'FC1', 0, { ship: -4, lost: -1 }));
+  ledger.push(led(mdy(year, monthIndex, last), 'B3', '50001', 'SELLABLE', 5, 4, 'FC3', 0, { ship: -1 }));
   const biz = [['(Parent) ASIN', '(Child) ASIN', 'Title', 'Sessions - Total', 'Units Ordered', 'Ordered Product Sales'],
     ['P1', 'B1', 'Thirty', '9,143', '20', '$1,000.00'],
     ['P1', 'B2', 'Sample', '741', '4', '$20.00'],
@@ -58,16 +65,23 @@ function sampleRaw(year, monthIndex) {
     ['P9', 'B9', 'Parent row', '2', '0', '$0.00'],
     ['P8', 'B8', 'Unknown', '5', '2', '$30.00']];
   const shopify = [SHOP_HEADER,
-    ['#1', 'a@x', 'paid', '3', 'Kit', '10', '10030', '', 'web'],
-    ['#1', '', '', '2', '180 refill', '10', '80090,80090', '', ''],
-    ['#2', 'b@x', 'paid', '1', '30 refill', '0', '80030', 'Replacement - Customer Mistake', 'shopify_draft_order'],
-    ['#2', '', '', '1', 'Tin', '0', '51002', '', ''],
-    ['#3', 'c@x', 'paid', '1', 'Tin bundle', '0', '80030,51002', 'TikTok-FBM', 'tiktok'],
-    ['#4', 'd@x', 'paid', '1', '90 refill', '0', '80090', 'Free sample, TikTok', 'tiktok'],
-    ['#5', 'e@x', 'paid', '1', 'Gift card', '25', '', '', 'web']];
+    ['#1', 'a@x', 'paid', '3', 'Kit', '10', '10030', '', 'web'].concat(F),
+    ['#1', '', '', '2', '180 refill', '10', '80090,80090', '', ''].concat(F),
+    ['#2', 'b@x', 'paid', '1', '30 refill', '0', '80030', 'Replacement - Customer Mistake', 'shopify_draft_order'].concat(F),
+    ['#2', '', '', '1', 'Tin', '0', '51002', '', ''].concat(F),
+    ['#3', 'c@x', 'paid', '1', 'Tin bundle', '0', '80030,51002', 'TikTok-FBM', 'tiktok'].concat(F),
+    ['#4', 'd@x', 'paid', '1', '90 refill', '0', '80090', 'Free sample, TikTok', 'tiktok'].concat(F),
+    ['#5', 'e@x', 'paid', '1', 'Gift card', '25', '', '', 'web'].concat(F),
+    // Rule 5.4a: not counted — cancelled; refunded and never shipped (2nd line inherits the order's status)
+    ['#6', 'f@x', 'paid', '5', '90 refill', '10', '80090', '', 'web', '2026-01-01 10:00:00 -0500', 'unfulfilled'],
+    ['#7', 'g@x', 'refunded', '2', '90 refill', '10', '80090', '', 'web', '', 'unfulfilled'],
+    ['#7', '', '', '4', 'Tin', '0', '51002', '', '', '', '']];
   const manual = [['CUSTOMER', 'ORDER', 'SKU', 'QUANTITY', 'DATE'],
     ['MANUAL', '141', '50001', '2', (monthIndex + 1) + '/2/' + year],
-    ['AMAZON', '142', 'A0030', '15', (monthIndex + 1) + '/17/' + year]];
+    ['AMAZON', '142', 'A0030', '15', (monthIndex + 1) + '/17/' + year],
+    // Rule 5.6: shipped outside the month → not counted
+    ['MANUAL', '140', '50001', '99', (pm + 1) + '/' + pLast + '/' + py],
+    ['AMAZON', '143', 'A0030', '50', monthIndex === 11 ? '01/01/' + (year + 1) : (monthIndex + 2) + '/1/' + year]];
   const bomValues = [
     ['BOM', '', '', '', ''],
     ['Parent SKU', 'Parent Desc', 'Child SKU', 'Child Desc', 'Qty'],

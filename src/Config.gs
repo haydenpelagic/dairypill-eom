@@ -55,11 +55,17 @@ var CONFIG = {
                numeric: ['Shelf Life', 'Qty Picked (7 Days)', 'Qty Picked (30 Days)', 'Qty On Hand', 'Qty On Hand (S1)', 'Qty On Hand (S2)', 'Qty On Hand (S3)', 'Projected Months of Inventory'] },
     LEDGER:  { date: 'Date', asin: 'ASIN', msku: 'MSKU', receipts: 'Receipts', ending: 'Ending Warehouse Balance',
                starting: 'Starting Warehouse Balance', // Rule 4.2: Amazon Beginning = this on the 1st-of-month rows
+               inTransit: 'In Transit Between Warehouses', transfers: 'Warehouse Transfer In/Out', // Rule 4.2 / 9.3
+               shipments: 'Customer Shipments', // Rule 9.3: Amazon Sold / Used
+               // Rule 12.13: ledger events (other than receipts/shipments) that explain the Amazon Delta
+               deltaEvents: ['Customer Returns', 'Vendor Returns', 'Found', 'Lost', 'Damaged', 'Disposed', 'Other Events', 'Unknown Events'],
                numericFrom: 'Starting Warehouse Balance', numericTo: 'Unknown Events' },
     BIZ:     { asin: '(Child) ASIN', units: 'Units Ordered', numericFrom: 'Sessions - Total' },
+    // Rule 5.4a: Financial Status / Cancelled at are on an order's first line only; Lineitem fulfillment status is per line.
     SHOPIFY: { name: 'Name', sku: 'Lineitem sku', qty: 'Lineitem quantity', tags: 'Tags',
+               financial: 'Financial Status', cancelled: 'Cancelled at', fulfillment: 'Lineitem fulfillment status',
                numeric: ['Lineitem quantity', 'Subtotal', 'Shipping', 'Taxes', 'Total', 'Discount Amount', 'Lineitem price', 'Lineitem compare at price', 'Refunded Amount', 'Outstanding Balance', 'Lineitem discount'] },
-    MANUAL:  { customer: 'CUSTOMER', sku: 'SKU', qty: 'QUANTITY' }
+    MANUAL:  { customer: 'CUSTOMER', sku: 'SKU', qty: 'QUANTITY', date: 'DATE' } // Rule 5.6: DATE = ship date
   },
 
   // ---- Rule 5.4: Shopify channel rules (first match wins, not case-sensitive) -

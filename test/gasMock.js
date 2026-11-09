@@ -100,6 +100,7 @@ class MockSheet {
     return new MockRange(this, a, b, c || 1, d || 1);
   }
   getMaxRows() { return this.maxRows; }
+  getLastColumn() { return this.lastCol(); }
   getMaxColumns() { return this.maxCols; }
   insertRowsAfter(_, n) { this.maxRows += n; }
   insertColumnsAfter(_, n) { this.maxCols += n; }

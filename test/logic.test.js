@@ -108,13 +108,14 @@ test('Rule 4.2a: tie-out rows are the last day of last month only', () => {
 });
 
 test('Rule 5.4: Shopify lines inherit the order\'s tags; split orders stop the run', () => {
-  const t = { header: ['Name', 'Lineitem quantity', 'Lineitem sku', 'Tags'], rows: [['#1', '1', 'A', 'Replacement'], ['#1', '1', 'B', ''], ['#2', '1', 'C', '']] };
+  const H = ['Name', 'Lineitem quantity', 'Lineitem sku', 'Tags', 'Financial Status', 'Cancelled at', 'Lineitem fulfillment status'];
+  const t = { header: H, rows: [['#1', '1', 'A', 'Replacement', 'paid', '', 'fulfilled'], ['#1', '1', 'B', '', '', '', 'fulfilled'], ['#2', '1', 'C', '', 'paid', '', 'fulfilled']] };
   const m = L.shopifyModel_('Order Export', t);
-  assert.deepEqual(plain(m.values[0]), ['Name', 'Lineitem quantity', 'Lineitem sku', 'Tags', 'Order Tags', 'Channel']);
-  assert.equal(m.values[1][4], '=""&D2');
-  assert.equal(m.values[2][4], '=IF(A3=A2,E2,""&D3)');
-  assert.match(m.values[2][5], /^=IF\(ISNUMBER\(SEARCH\("influencer",E3\)\),"Marketing",IF\(ISNUMBER\(SEARCH\("replacement",E3\)\),"CX"/);
-  const split = { header: t.header, rows: [['#1', '1', 'A', ''], ['#2', '1', 'B', ''], ['#1', '1', 'C', '']] };
+  assert.deepEqual(plain(m.values[0]), H.concat(['Order Tags', 'Channel', 'Order Financial Status', 'Order Cancelled At', 'Counted', 'Counted Qty']));
+  assert.equal(m.values[1][7], '=""&D2');
+  assert.equal(m.values[2][7], '=IF(A3=A2,H2,""&D3)');
+  assert.match(m.values[2][8], /^=IF\(ISNUMBER\(SEARCH\("influencer",H3\)\),"Marketing",IF\(ISNUMBER\(SEARCH\("replacement",H3\)\),"CX"/);
+  const split = { header: H, rows: [['#1', '1', 'A', '', '', '', ''], ['#2', '1', 'B', '', '', '', ''], ['#1', '1', 'C', '', '', '', '']] };
   assert.throws(() => L.shopifyModel_('Order Export', split), /order #1 appears in two separate places/);
 });
 

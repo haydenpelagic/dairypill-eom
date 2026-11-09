@@ -263,3 +263,12 @@ test('a failed run changes nothing in the folder', () => {
   assert.throws(() => ctx.buildEOM(), /missing 1 day/);
   assert.deepEqual(names(dec), before, 'no workbook, Sell Thru or renamed files after a failed check');
 });
+
+test('a Sell Thru file from an older script version is rebuilt, not reused', () => {
+  const g = createGas(); const c = load(g);
+  const f = g.root.createFolder('x');
+  const old = g.spreadsheetWithId('st-old', 'old', f, { 'Order Export': [['Name', 'Order Tags', 'Channel']] });
+  const cur = g.spreadsheetWithId('st-new', 'new', f, { 'Order Export': [['Name', 'Counted', 'Counted Qty']] });
+  assert.equal(c.sellThruIsCurrent_(old.file), false);
+  assert.equal(c.sellThruIsCurrent_(cur.file), true);
+});

@@ -68,9 +68,10 @@ function writeModel_(ss, model) {
 
   // Formats first, so text SKUs stay text and numbers stay numbers (Rule 5.1a).
   var tFrom = model.textFromRow || 1;
-  if (height >= tFrom) {
+  var tTo = Math.min(height, model.textToRow || height);
+  if (tTo >= tFrom) {
     formatRuns_(model.textCols || [], '@').forEach(function (run) {
-      sheet.getRange(tFrom, run[0] + 1, height - tFrom + 1, run[1]).setNumberFormat('@');
+      sheet.getRange(tFrom, run[0] + 1, tTo - tFrom + 1, run[1]).setNumberFormat('@');
     });
   }
   var nFrom = model.numberFromRow || 2;
@@ -105,7 +106,7 @@ function writeModel_(ss, model) {
   if (model.frozenRows) sheet.setFrozenRows(model.frozenRows);
   if (model.tabColor) sheet.setTabColor(model.tabColor);
   if (model.isChecks) {
-    var rng = sheet.getRange(2, 3, Math.max(height - 1, 1), 1);
+    var rng = sheet.getRange(2, 3, Math.max((model.checksEndRow || height) - 1, 1), 1);
     sheet.setConditionalFormatRules([
       SpreadsheetApp.newConditionalFormatRule().whenTextStartsWith('FLAG').setBackground('#f4cccc').setRanges([rng]).build(),
       SpreadsheetApp.newConditionalFormatRule().whenTextStartsWith('CHECK').setBackground('#fff2cc').setRanges([rng]).build(),
