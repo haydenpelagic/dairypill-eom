@@ -292,59 +292,92 @@ function findStartingBalances_(parent, monthFolder, m) {
   var boot = bootFolder ? scanFolder_(bootFolder, m) : null;
   var notes = [];
 
-  // ADS (Rule 4.1)
-  var prevAdsName = 'ADS Ending Balance ' + m.prevEndStr + '.csv';
-  var adsFile = prevFolder ? fileByName_(prevFolder, prevAdsName) : null;
-  var adsText;
-  if (adsFile) {
-    adsText = adsFile.getBlob().getDataAsString();
-    if (identifyText_(adsText) !== 'ADS') throw new Error('"' + prevAdsName + '" in the ' + m.prevLabel + ' folder is not an ADS stock snapshot.');
-    notes.push('ADS: "' + prevAdsName + '" from the ' + m.prevLabel + ' folder');
+  // ADS (Rule 4.1). Last month's file is found by name with or without ".csv", or as a Google Sheet (Rule 2.3).
+  var prevAdsBase = 'ADS Ending Balance ' + m.prevEndStr;
+  var adsFound = prevFolder ? monthFileEntry_(prevFolder, prevAdsBase) : null;
+  var adsEntry;
+  if (adsFound) {
+    if (adsFound.type !== 'ADS') throw new Error('"' + adsFound.file.getName() + '" in the ' + m.prevLabel + ' folder is not an ADS stock snapshot.');
+    adsEntry = adsFound;
+    notes.push('ADS: "' + adsFound.file.getName() + '" from the ' + m.prevLabel + ' folder');
   } else if (boot && boot.byType.ADS.length === 1) {
-    adsFile = boot.byType.ADS[0].file;
-    adsText = boot.byType.ADS[0].text;
-    notes.push('ADS: "' + adsFile.getName() + '" from the "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder (first run)');
+    adsEntry = boot.byType.ADS[0];
+    notes.push('ADS: "' + adsEntry.file.getName() + '" from the "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder (first run)');
   } else {
-    throw new Error('Could not find last month\'s ADS ending snapshot. It should be "' + prevAdsName + '" in the "' + m.prevLabel +
+    throw new Error('Could not find last month\'s ADS ending snapshot. It should be "' + prevAdsBase + '.csv" in the "' + m.prevLabel +
       '" folder (made automatically when ' + m.prevLabel + ' was built). First run only: put last month\'s ADS snapshot CSV in a subfolder named "' +
       CONFIG.STARTING_BALANCES_SUBFOLDER + '" inside "' + m.label + '".' + (boot && boot.byType.ADS.length > 1 ? ' (That subfolder has more than one ADS snapshot.)' : ''));
   }
 
   // Amazon (Rule 4.2): Beginning comes from THIS month's ledger (1st-of-month rows), so nothing is required here.
   // Rule 4.2a: if last month's ledger can be found, it is used only for the tie-out on Checks (never stops the run).
-  var prevLedgerName = 'AMZ Inventory Ledger ' + m.prevEndStr + '.csv';
-  var ledFile = prevFolder ? fileByName_(prevFolder, prevLedgerName) : null;
-  var ledText = null, ledLabel = null, amzPrev = { rows: null, source: null, problem: null };
-  if (ledFile) {
-    ledText = ledFile.getBlob().getDataAsString();
-    ledLabel = '"' + prevLedgerName + '" in the ' + m.prevLabel + ' folder';
-  } else if (boot && boot.byType.LEDGER.length === 1) {
-    ledText = boot.byType.LEDGER[0].text;
-    ledLabel = '"' + boot.byType.LEDGER[0].file.getName() + '" in the "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder';
-  } else if (boot && boot.byType.LEDGER.length > 1) {
-    amzPrev.problem = 'The "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder has more than one Amazon ledger — keep only the one ending ' + m.prevEndMDY + '.';
-  } else {
-    amzPrev.source = 'looked for "' + prevLedgerName + '" in the ' + m.prevLabel + ' folder';
-  }
-  if (ledText !== null) {
-    amzPrev.source = ledLabel;
-    try {
-      if (identifyText_(ledText) !== 'LEDGER') throw new Error(ledLabel + ' is not an Amazon Inventory Ledger.');
-      amzPrev.rows = ledgerLastDateRows_(toTable_(parseCsv_(ledText), 'last month\'s Amazon ledger'), m.prevEndSerial, ledLabel);
-    } catch (err) {
-      amzPrev.problem = err.message + ' Fix or remove that file and run again to get the tie-out.';
+  var prevLedgerBase = 'AMZ Inventory Ledger ' + m.prevEndStr;
+  var amzPrev = { rows: null, source: null, problem: null };
+  var ledEntry = null, ledLabel = null;
+  try {
+    var ledFound = prevFolder ? monthFileEntry_(prevFolder, prevLedgerBase) : null;
+    if (ledFound) {
+      ledEntry = ledFound;
+      ledLabel = '"' + ledFound.file.getName() + '" in the ' + m.prevLabel + ' folder';
+    } else if (boot && boot.byType.LEDGER.length === 1) {
+      ledEntry = boot.byType.LEDGER[0];
+      ledEntry.type = 'LEDGER';
+      ledLabel = '"' + ledEntry.file.getName() + '" in the "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder';
+    } else if (boot && boot.byType.LEDGER.length > 1) {
+      amzPrev.problem = 'The "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder has more than one Amazon ledger — keep only the one ending ' + m.prevEndMDY + '.';
+    } else {
+      amzPrev.source = 'looked for "' + prevLedgerBase + '.csv" in the ' + m.prevLabel + ' folder';
     }
+    if (ledEntry) {
+      amzPrev.source = ledLabel;
+      if (ledEntry.type !== 'LEDGER') throw new Error(ledLabel + ' is not an Amazon Inventory Ledger.');
+      amzPrev.rows = ledgerLastDateRows_(tableFromEntry_(ledEntry, 'last month\'s Amazon ledger'), m.prevEndSerial, ledLabel);
+    }
+  } catch (err) {
+    amzPrev.rows = null;
+    amzPrev.problem = err.message + ' Fix or remove that file and run again to get the tie-out.';
   }
   notes.push('Amazon: ' + serialToMDY_(m.firstSerial) + ' rows of this month\'s Amazon Inventory Ledger (Starting Warehouse Balance)');
 
   return {
-    ads: toTable_(parseCsv_(adsText), 'starting ADS snapshot'), amzPrevEnd: amzPrev, sourceText: notes.join('; ') + '.',
+    ads: tableFromEntry_(adsEntry, 'starting ADS snapshot'), amzPrevEnd: amzPrev, sourceText: notes.join('; ') + '.',
     // Rule 4.1: a copy of the starting ADS snapshot goes into this month's folder (done after all checks pass).
     copyAdsStartFile: function () {
-      var startCopyName = tabs.adsStart + '.csv';
-      if (!fileByName_(monthFolder, startCopyName)) adsFile.makeCopy(startCopyName, monthFolder);
+      var isSheet = adsEntry.file.getMimeType() === MimeType.GOOGLE_SHEETS;
+      if (monthFileEntry_(monthFolder, tabs.adsStart, true)) return;
+      adsEntry.file.makeCopy(tabs.adsStart + (isSheet ? '' : '.csv'), monthFolder);
     }
   };
+}
+
+/**
+ * Rule 2.3: a renamed raw file, found by its base name whether it ends in ".csv" (any extension) or
+ * was saved as a Google Sheet. Returns {file, type, text|values} or null. Two matches stop the run.
+ * nameOnly = just check it exists (don't read it).
+ */
+function monthFileEntry_(folder, base, nameOnly) {
+  var found = [];
+  var it = folder.getFiles();
+  while (it.hasNext()) {
+    var f = it.next(), n = f.getName();
+    if (f.isTrashed()) continue;
+    if (n === base || (n.indexOf(base + '.') === 0 && /^\.[A-Za-z0-9]+$/.test(n.slice(base.length)))) found.push(f);
+  }
+  if (found.length > 1) {
+    throw new Error('There are ' + found.length + ' files named "' + base + '" in "' + folder.getName() + '": ' +
+      found.map(function (f) { return '"' + f.getName() + '"'; }).join(', ') + '. Keep only one.');
+  }
+  if (!found.length) return null;
+  var file = found[0], entry = { file: file };
+  if (nameOnly) return entry;
+  if (file.getMimeType() === MimeType.GOOGLE_SHEETS) {
+    entry.values = SpreadsheetApp.open(file).getSheets()[0].getDataRange().getValues();
+    entry.type = identifyHeader_(entry.values[0] || []);
+  } else {
+    entry.text = file.getBlob().getDataAsString();
+    entry.type = identifyText_(entry.text);
+  }
+  return entry;
 }
 
 // -----------------------------------------------------------------------------
@@ -761,6 +794,22 @@ function mergeSkuMap_(existingRows, pairs, todayStr) {
   return { rows: rows, added: added };
 }
 
+/** Rule 12.3: an ASIN (Business Report lookup) or MSKU (ledger lookup) whose map rows point at different SKUs. */
+function skuMapConflicts_(rows) {
+  var out = [];
+  [{ kind: 'ASIN', col: 1 }, { kind: 'MSKU', col: 0 }].forEach(function (k) {
+    var by = {}, order = [];
+    rows.forEach(function (r) {
+      var key = r[k.col], sku = r[2];
+      if (key === '' || sku === '') return;
+      if (!by[key]) { by[key] = []; order.push(key); }
+      if (by[key].indexOf(sku) < 0) by[key].push(sku);
+    });
+    order.forEach(function (key) { if (by[key].length > 1) out.push({ kind: k.kind, key: key, skus: by[key] }); });
+  });
+  return out;
+}
+
 function lookupMap_(rows, colIdx, value) {
   for (var i = 0; i < rows.length; i++) if (rows[i][colIdx] === value) return rows[i][2];
   return null;
@@ -911,16 +960,16 @@ function ledgerFirstDateRows_(table, m) {
 }
 
 /**
- * Rule 4.2a: per Amazon MSKU, last month's final-day Ending Warehouse Balance vs this month's
- * 1st-of-month Starting Warehouse Balance. Returns the MSKUs that differ (empty = ties).
+ * Rule 4.2a: per OUR SKU (MSKU mapped with skuOf), last month's final-day Ending Warehouse Balance vs
+ * this month's 1st-of-month Starting Warehouse Balance. Returns the SKUs that differ (empty = ties).
  */
-function amzTieOut_(prevEndRows, firstRows) {
+function amzTieOut_(prevEndRows, firstRows, skuOf) {
   var L = CONFIG.COLUMNS.LEDGER;
   function sums(tbl, colName, where) {
     var mi = requireHeader_(tbl.header, L.msku, where), vi = requireHeader_(tbl.header, colName, where);
     var out = {};
     tbl.rows.forEach(function (r, i) {
-      var k = cleanSku_(r[mi]);
+      var k = skuOf ? skuOf(cleanSku_(r[mi])) : cleanSku_(r[mi]);
       out[k] = (out[k] || 0) + toNumber_(r[vi], 'in ' + where + ' (' + colName + '), row ' + (i + 2));
     });
     return out;
@@ -930,7 +979,7 @@ function amzTieOut_(prevEndRows, firstRows) {
   var diffs = [];
   uniqueSorted_(Object.keys(prev).concat(Object.keys(cur))).forEach(function (k) {
     var a = prev[k] || 0, b = cur[k] || 0;
-    if (Math.abs(a - b) > 1e-9) diffs.push({ msku: k, prevEnd: a, start: b, diff: b - a });
+    if (Math.abs(a - b) > 1e-9) diffs.push({ sku: k, prevEnd: a, start: b, diff: b - a });
   });
   return diffs;
 }
@@ -1547,6 +1596,10 @@ function checksModel_(ctx, info) {
     info.unmappedAsins.length ? 'Business Report ASINs with sales but no mapping: ' + info.unmappedAsins.join(', ') : '');
   add('12.3', 'AMZ SKU Map entries added this run', info.mapAdded.length ? 'INFO' : 'OK',
     info.mapAdded.length ? info.mapAdded.map(function (r) { return r[0] + ' (' + r[1] + ') → ' + r[2] + ' [' + r[3] + ']'; }).join('; ') : 'No new Amazon SKUs.');
+  var mc = info.mapConflicts || [];
+  add('12.3', 'Amazon MSKU/ASIN mapped to more than one of our SKUs', mc.length ? 'FLAG: ' + mc.length : 'OK',
+    mc.length ? mc.map(function (x) { return x.kind + ' ' + x.key + ' → ' + x.skus.join(' / '); }).join('; ') +
+      '. Only the FIRST matching row on AMZ SKU Map is used, so units may land on the wrong SKU — fix the map so each one points to a single SKU.' : '');
   add('12.4', 'Shopify lines with no SKU (not counted anywhere)',
     flagIf_('COUNTIFS(' + colRef_(t.shopify, c.shop.sku) + ',"",' + colRef_(t.shopify, c.shop.name) + ',"<>")', 'lines'), '');
   add('12.5', 'Rows where Expected Ending Inventory is negative', flagIf_('COUNTIF(' + colRef_(t.variance, 'H') + ',"<0")',
@@ -1573,11 +1626,11 @@ function checksModel_(ctx, info) {
   } else if (!tie.diffs) {
     add('12.10', 'Amazon starting balance = last month\'s ending', 'INFO', 'Not compared — no ' + prevEnd + ' Amazon ledger found (' + (tie.source || 'none') + ').');
   } else {
-    add('12.10', 'Amazon starting balance = last month\'s ending', tie.diffs.length ? 'FLAG: ' + tie.diffs.length + ' MSKU(s) differ' : 'OK',
+    add('12.10', 'Amazon starting balance = last month\'s ending', tie.diffs.length ? 'FLAG: ' + tie.diffs.length + ' SKU(s) differ' : 'OK',
       tie.diffs.length
-        ? tie.diffs.map(function (d) { return d.msku + ': ' + prevEnd + ' ending ' + d.prevEnd + ' vs ' + first + ' starting ' + d.start + ' (' + (d.diff > 0 ? '+' : '') + d.diff + ')'; }).join('; ') +
+        ? tie.diffs.map(function (d) { return d.sku + ': ' + prevEnd + ' ending ' + d.prevEnd + ' vs ' + first + ' starting ' + d.start + ' (' + (d.diff > 0 ? '+' : '') + d.diff + ')'; }).join('; ') +
           '. Beginning Inventory uses the ' + first + ' figure. Compared with ' + tie.source + '.'
-        : 'Every MSKU\'s ' + first + ' starting balance equals its ' + prevEnd + ' ending balance in ' + tie.source + '.');
+        : 'Every Amazon SKU\'s ' + first + ' starting balance equals its ' + prevEnd + ' ending balance in ' + tie.source + '.');
   }
   add('5.2', 'Amazon ledger covers the whole month', 'OK', 'Every day from ' + serialToMDY_(ctx.month.firstSerial) + ' to ' + ctx.month.endMDY + ' is present.');
   add('5.3', 'Files with no dates inside', 'CHECK', 'The ADS snapshot and the Amazon Business Report contain no dates. Confirm the ADS snapshot was pulled on ' +
@@ -1652,8 +1705,6 @@ function buildWorkbookModel_(inputs) {
   checkLedgerCoversMonth_(inputs.ledger, m);
   // Rule 4.2: Amazon starting balance = this month's 1st-of-month rows.
   var amzStart = ledgerFirstDateRows_(inputs.ledger, m);
-  var tie = inputs.amzPrevEnd || {};
-  var amzTie = tie.rows ? { diffs: amzTieOut_(tie.rows, amzStart), source: tie.source } : { diffs: null, source: tie.source, problem: tie.problem };
 
   // --- AMZ SKU Map (Rule 6.3)
   var pairs = [];
@@ -1662,6 +1713,11 @@ function buildWorkbookModel_(inputs) {
     tbl.rows.forEach(function (r) { pairs.push({ msku: cleanSku_(r[mi]), asin: ai >= 0 ? cleanSku_(r[ai]) : '' }); });
   });
   var map = mergeSkuMap_(inputs.skuMapExisting || [], pairs, inputs.todayStr);
+
+  // Rule 4.2a: tie-out by our SKU (map first; MSKUs only in last month's ledger use the Rule 6.3 rename).
+  var tie = inputs.amzPrevEnd || {};
+  var skuOf = function (msku) { return lookupMap_(map.rows, 0, msku) || mapAmazonSku_(msku).sku; };
+  var amzTie = tie.rows ? { diffs: amzTieOut_(tie.rows, amzStart, skuOf), source: tie.source } : { diffs: null, source: tie.source, problem: tie.problem };
 
   // --- raw tabs
   var adsStartModel = adsModel_(tabs.adsStart, inputs.adsStart);
@@ -1774,6 +1830,7 @@ function buildWorkbookModel_(inputs) {
     unmappedAsins: uniqueSorted_(unmappedAsins),
     mapAdded: map.added,
     amzTie: amzTie,
+    mapConflicts: skuMapConflicts_(map.rows),
     kitsWithoutBom: kitM.kitsWithoutBom,
     bomDuplicates: bom.duplicates,
     workOrders: { lines: inputs.workOrders.lines.length, fees: inputs.workOrders.feeLines, lineTotal: inputs.workOrders.lineTotal,

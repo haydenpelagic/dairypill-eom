@@ -200,5 +200,21 @@ test('Rule 4.2: AMZ Starting tab = this month\'s 1st-of-month ledger rows', () =
   assert.ok(v.slice(1).every((row) => row[0] === v[1][0]));
   const diffs = L.amzTieOut_({ header: ['MSKU', 'Ending Warehouse Balance'], rows: [['A', '5'], ['A', '1'], ['B', '2']] },
     { header: ['MSKU', 'Starting Warehouse Balance'], rows: [['A', '6'], ['C', '1']] });
-  assert.deepEqual(plain(diffs), [{ msku: 'B', prevEnd: 2, start: 0, diff: -2 }, { msku: 'C', prevEnd: 0, start: 1, diff: 1 }]);
+  assert.deepEqual(plain(diffs), [{ sku: 'B', prevEnd: 2, start: 0, diff: -2 }, { sku: 'C', prevEnd: 0, start: 1, diff: 1 }]);
+  // with a mapping, two MSKUs for one SKU are added together before comparing
+  const byOurs = L.amzTieOut_({ header: ['MSKU', 'Ending Warehouse Balance'], rows: [['A - TEMP SKU', '5']] },
+    { header: ['MSKU', 'Starting Warehouse Balance'], rows: [['A - TEMP SKU', '2'], ['A', '3']] }, (m) => m.replace(' - TEMP SKU', ''));
+  assert.deepEqual(plain(byOurs), []);
+});
+
+test('Rule 12.3: an ASIN or MSKU mapped to two different SKUs is flagged', () => {
+  const label = 'Amazon MSKU/ASIN mapped to more than one of our SKUs';
+  const row = (b) => b.sheets.find((x) => x.name === b.tabs.checks).values.find((r) => r[1] === label);
+  assert.equal(row(built)[2], 'OK');
+  const bad = L.buildWorkbookModel_(sampleInputs(L, { skuMapExisting: [['A0030 - TEMP SKU', 'B1', 'A0030', ''], ['A0030-NEW', 'B1', 'A0031', 'typed']] }));
+  assert.equal(row(bad)[2], 'FLAG: 1');
+  assert.match(row(bad)[3], /ASIN B1 → A0030 \/ A0031/);
+  const same = L.buildWorkbookModel_(sampleInputs(L, { skuMapExisting: [['A0030 - TEMP SKU', 'B1', 'A0030', ''], ['A0030-NEW', 'B1', 'A0030', '']] }));
+  assert.equal(row(same)[2], 'OK', 'two MSKUs on one ASIN is fine when they map to the same SKU');
+  assert.deepEqual(plain(L.skuMapConflicts_([['M1', 'X', 'S1', ''], ['M1', 'Y', 'S2', '']])), [{ kind: 'MSKU', key: 'M1', skus: ['S1', 'S2'] }]);
 });

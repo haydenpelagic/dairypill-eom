@@ -298,6 +298,22 @@ function mergeSkuMap_(existingRows, pairs, todayStr) {
   return { rows: rows, added: added };
 }
 
+/** Rule 12.3: an ASIN (Business Report lookup) or MSKU (ledger lookup) whose map rows point at different SKUs. */
+function skuMapConflicts_(rows) {
+  var out = [];
+  [{ kind: 'ASIN', col: 1 }, { kind: 'MSKU', col: 0 }].forEach(function (k) {
+    var by = {}, order = [];
+    rows.forEach(function (r) {
+      var key = r[k.col], sku = r[2];
+      if (key === '' || sku === '') return;
+      if (!by[key]) { by[key] = []; order.push(key); }
+      if (by[key].indexOf(sku) < 0) by[key].push(sku);
+    });
+    order.forEach(function (key) { if (by[key].length > 1) out.push({ kind: k.kind, key: key, skus: by[key] }); });
+  });
+  return out;
+}
+
 function lookupMap_(rows, colIdx, value) {
   for (var i = 0; i < rows.length; i++) if (rows[i][colIdx] === value) return rows[i][2];
   return null;
@@ -448,16 +464,16 @@ function ledgerFirstDateRows_(table, m) {
 }
 
 /**
- * Rule 4.2a: per Amazon MSKU, last month's final-day Ending Warehouse Balance vs this month's
- * 1st-of-month Starting Warehouse Balance. Returns the MSKUs that differ (empty = ties).
+ * Rule 4.2a: per OUR SKU (MSKU mapped with skuOf), last month's final-day Ending Warehouse Balance vs
+ * this month's 1st-of-month Starting Warehouse Balance. Returns the SKUs that differ (empty = ties).
  */
-function amzTieOut_(prevEndRows, firstRows) {
+function amzTieOut_(prevEndRows, firstRows, skuOf) {
   var L = CONFIG.COLUMNS.LEDGER;
   function sums(tbl, colName, where) {
     var mi = requireHeader_(tbl.header, L.msku, where), vi = requireHeader_(tbl.header, colName, where);
     var out = {};
     tbl.rows.forEach(function (r, i) {
-      var k = cleanSku_(r[mi]);
+      var k = skuOf ? skuOf(cleanSku_(r[mi])) : cleanSku_(r[mi]);
       out[k] = (out[k] || 0) + toNumber_(r[vi], 'in ' + where + ' (' + colName + '), row ' + (i + 2));
     });
     return out;
@@ -467,7 +483,7 @@ function amzTieOut_(prevEndRows, firstRows) {
   var diffs = [];
   uniqueSorted_(Object.keys(prev).concat(Object.keys(cur))).forEach(function (k) {
     var a = prev[k] || 0, b = cur[k] || 0;
-    if (Math.abs(a - b) > 1e-9) diffs.push({ msku: k, prevEnd: a, start: b, diff: b - a });
+    if (Math.abs(a - b) > 1e-9) diffs.push({ sku: k, prevEnd: a, start: b, diff: b - a });
   });
   return diffs;
 }
@@ -1084,6 +1100,10 @@ function checksModel_(ctx, info) {
     info.unmappedAsins.length ? 'Business Report ASINs with sales but no mapping: ' + info.unmappedAsins.join(', ') : '');
   add('12.3', 'AMZ SKU Map entries added this run', info.mapAdded.length ? 'INFO' : 'OK',
     info.mapAdded.length ? info.mapAdded.map(function (r) { return r[0] + ' (' + r[1] + ') → ' + r[2] + ' [' + r[3] + ']'; }).join('; ') : 'No new Amazon SKUs.');
+  var mc = info.mapConflicts || [];
+  add('12.3', 'Amazon MSKU/ASIN mapped to more than one of our SKUs', mc.length ? 'FLAG: ' + mc.length : 'OK',
+    mc.length ? mc.map(function (x) { return x.kind + ' ' + x.key + ' → ' + x.skus.join(' / '); }).join('; ') +
+      '. Only the FIRST matching row on AMZ SKU Map is used, so units may land on the wrong SKU — fix the map so each one points to a single SKU.' : '');
   add('12.4', 'Shopify lines with no SKU (not counted anywhere)',
     flagIf_('COUNTIFS(' + colRef_(t.shopify, c.shop.sku) + ',"",' + colRef_(t.shopify, c.shop.name) + ',"<>")', 'lines'), '');
   add('12.5', 'Rows where Expected Ending Inventory is negative', flagIf_('COUNTIF(' + colRef_(t.variance, 'H') + ',"<0")',
@@ -1110,11 +1130,11 @@ function checksModel_(ctx, info) {
   } else if (!tie.diffs) {
     add('12.10', 'Amazon starting balance = last month\'s ending', 'INFO', 'Not compared — no ' + prevEnd + ' Amazon ledger found (' + (tie.source || 'none') + ').');
   } else {
-    add('12.10', 'Amazon starting balance = last month\'s ending', tie.diffs.length ? 'FLAG: ' + tie.diffs.length + ' MSKU(s) differ' : 'OK',
+    add('12.10', 'Amazon starting balance = last month\'s ending', tie.diffs.length ? 'FLAG: ' + tie.diffs.length + ' SKU(s) differ' : 'OK',
       tie.diffs.length
-        ? tie.diffs.map(function (d) { return d.msku + ': ' + prevEnd + ' ending ' + d.prevEnd + ' vs ' + first + ' starting ' + d.start + ' (' + (d.diff > 0 ? '+' : '') + d.diff + ')'; }).join('; ') +
+        ? tie.diffs.map(function (d) { return d.sku + ': ' + prevEnd + ' ending ' + d.prevEnd + ' vs ' + first + ' starting ' + d.start + ' (' + (d.diff > 0 ? '+' : '') + d.diff + ')'; }).join('; ') +
           '. Beginning Inventory uses the ' + first + ' figure. Compared with ' + tie.source + '.'
-        : 'Every MSKU\'s ' + first + ' starting balance equals its ' + prevEnd + ' ending balance in ' + tie.source + '.');
+        : 'Every Amazon SKU\'s ' + first + ' starting balance equals its ' + prevEnd + ' ending balance in ' + tie.source + '.');
   }
   add('5.2', 'Amazon ledger covers the whole month', 'OK', 'Every day from ' + serialToMDY_(ctx.month.firstSerial) + ' to ' + ctx.month.endMDY + ' is present.');
   add('5.3', 'Files with no dates inside', 'CHECK', 'The ADS snapshot and the Amazon Business Report contain no dates. Confirm the ADS snapshot was pulled on ' +
@@ -1189,8 +1209,6 @@ function buildWorkbookModel_(inputs) {
   checkLedgerCoversMonth_(inputs.ledger, m);
   // Rule 4.2: Amazon starting balance = this month's 1st-of-month rows.
   var amzStart = ledgerFirstDateRows_(inputs.ledger, m);
-  var tie = inputs.amzPrevEnd || {};
-  var amzTie = tie.rows ? { diffs: amzTieOut_(tie.rows, amzStart), source: tie.source } : { diffs: null, source: tie.source, problem: tie.problem };
 
   // --- AMZ SKU Map (Rule 6.3)
   var pairs = [];
@@ -1199,6 +1217,11 @@ function buildWorkbookModel_(inputs) {
     tbl.rows.forEach(function (r) { pairs.push({ msku: cleanSku_(r[mi]), asin: ai >= 0 ? cleanSku_(r[ai]) : '' }); });
   });
   var map = mergeSkuMap_(inputs.skuMapExisting || [], pairs, inputs.todayStr);
+
+  // Rule 4.2a: tie-out by our SKU (map first; MSKUs only in last month's ledger use the Rule 6.3 rename).
+  var tie = inputs.amzPrevEnd || {};
+  var skuOf = function (msku) { return lookupMap_(map.rows, 0, msku) || mapAmazonSku_(msku).sku; };
+  var amzTie = tie.rows ? { diffs: amzTieOut_(tie.rows, amzStart, skuOf), source: tie.source } : { diffs: null, source: tie.source, problem: tie.problem };
 
   // --- raw tabs
   var adsStartModel = adsModel_(tabs.adsStart, inputs.adsStart);
@@ -1311,6 +1334,7 @@ function buildWorkbookModel_(inputs) {
     unmappedAsins: uniqueSorted_(unmappedAsins),
     mapAdded: map.added,
     amzTie: amzTie,
+    mapConflicts: skuMapConflicts_(map.rows),
     kitsWithoutBom: kitM.kitsWithoutBom,
     bomDuplicates: bom.duplicates,
     workOrders: { lines: inputs.workOrders.lines.length, fees: inputs.workOrders.feeLines, lineTotal: inputs.workOrders.lineTotal,

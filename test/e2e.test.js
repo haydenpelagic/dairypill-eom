@@ -176,9 +176,11 @@ test('3. October carries everything forward from September (first-run workbook n
   assert.equal(ss.getSheetByName(tabs.amzStart).rawValues().length, 4, 'AMZ Starting tab = the three 10/01 rows + header');
   // Rule 4.2a: the differences are flagged on Checks, run not stopped
   const tieRow = ss.getSheetByName(tabs.checks).rawValues().find((x) => x[1] === 'Amazon starting balance = last month\'s ending');
-  assert.equal(tieRow[2], 'FLAG: 3 MSKU(s) differ');
-  assert.match(tieRow[3], /A0030 - TEMP SKU: 09\/30\/2026 ending 115 vs 10\/01\/2026 starting 120 \(\+5\)/);
-  assert.match(tieRow[3], /A80002: 09\/30\/2026 ending 25 vs 10\/01\/2026 starting 30 \(\+5\)/);
+  assert.equal(tieRow[2], 'FLAG: 3 SKU(s) differ');
+  // shown by OUR SKU (A0030 - TEMP SKU → A0030, A80002 → A80004), matching Variance Overview
+  assert.match(tieRow[3], /(^|; )A0030: 09\/30\/2026 ending 115 vs 10\/01\/2026 starting 120 \(\+5\)/);
+  assert.match(tieRow[3], /A80004: 09\/30\/2026 ending 25 vs 10\/01\/2026 starting 30 \(\+5\)/);
+  assert.doesNotMatch(tieRow[3], /TEMP SKU/);
   assert.match(tieRow[3], /50001: 09\/30\/2026 ending 4 vs 10\/01\/2026 starting 0 \(-4\)/);
   assert.match(tieRow[3], /AMZ Inventory Ledger 09\.30\.2026\.csv" in the September 2026 folder/);
   // MFG start = September's MFG Inventory EOM
@@ -194,6 +196,24 @@ test('3. October carries everything forward from September (first-run workbook n
   assert.match(checks.find((x) => x[1] === 'Starting balances came from')[3], /September 2026 folder/);
   assert.equal(checks.find((x) => x[1] === 'AMZ SKU Map entries added this run')[2], 'OK');
   assert.ok(findFile(oct, 'ADS Starting Balance 09.30.2026.csv'));
+});
+
+test('Rule 2.3: last month\'s renamed files are found with or without .csv, or saved as a Google Sheet', () => {
+  const g = createGas(); const c = load(g);
+  const f = g.root.createFolder('September 2026');
+  const raw = sampleRaw(2026, 8);
+  assert.equal(c.monthFileEntry_(f, 'ADS Ending Balance 09.30.2026'), null);
+  f.createFile('ADS Ending Balance 09.30.2026 (1).csv', csv(raw.adsEnd)); // a different name: not matched
+  f.createFile('AMZ Inventory Ledger 09.30.2026', csv(raw.ledger));      // extension lost
+  assert.equal(c.monthFileEntry_(f, 'ADS Ending Balance 09.30.2026'), null);
+  const led = c.monthFileEntry_(f, 'AMZ Inventory Ledger 09.30.2026');
+  assert.equal(led.type, 'LEDGER');
+  g.spreadsheetWithId('sheet-ads', 'ADS Ending Balance 09.30.2026', f, { Sheet1: raw.adsEnd }); // saved as a Google Sheet
+  const ads = c.monthFileEntry_(f, 'ADS Ending Balance 09.30.2026');
+  assert.equal(ads.type, 'ADS');
+  assert.equal(c.tableFromEntry_(ads, 'x').rows.length, raw.adsEnd.length - 1);
+  f.createFile('ADS Ending Balance 09.30.2026.CSV', csv(raw.adsEnd));
+  assert.throws(() => c.monthFileEntry_(f, 'ADS Ending Balance 09.30.2026'), /There are 2 files named "ADS Ending Balance 09.30.2026".*Keep only one/);
 });
 
 test('missing or duplicate files stop the run with a clear message', () => {

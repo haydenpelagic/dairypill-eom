@@ -179,59 +179,92 @@ function findStartingBalances_(parent, monthFolder, m) {
   var boot = bootFolder ? scanFolder_(bootFolder, m) : null;
   var notes = [];
 
-  // ADS (Rule 4.1)
-  var prevAdsName = 'ADS Ending Balance ' + m.prevEndStr + '.csv';
-  var adsFile = prevFolder ? fileByName_(prevFolder, prevAdsName) : null;
-  var adsText;
-  if (adsFile) {
-    adsText = adsFile.getBlob().getDataAsString();
-    if (identifyText_(adsText) !== 'ADS') throw new Error('"' + prevAdsName + '" in the ' + m.prevLabel + ' folder is not an ADS stock snapshot.');
-    notes.push('ADS: "' + prevAdsName + '" from the ' + m.prevLabel + ' folder');
+  // ADS (Rule 4.1). Last month's file is found by name with or without ".csv", or as a Google Sheet (Rule 2.3).
+  var prevAdsBase = 'ADS Ending Balance ' + m.prevEndStr;
+  var adsFound = prevFolder ? monthFileEntry_(prevFolder, prevAdsBase) : null;
+  var adsEntry;
+  if (adsFound) {
+    if (adsFound.type !== 'ADS') throw new Error('"' + adsFound.file.getName() + '" in the ' + m.prevLabel + ' folder is not an ADS stock snapshot.');
+    adsEntry = adsFound;
+    notes.push('ADS: "' + adsFound.file.getName() + '" from the ' + m.prevLabel + ' folder');
   } else if (boot && boot.byType.ADS.length === 1) {
-    adsFile = boot.byType.ADS[0].file;
-    adsText = boot.byType.ADS[0].text;
-    notes.push('ADS: "' + adsFile.getName() + '" from the "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder (first run)');
+    adsEntry = boot.byType.ADS[0];
+    notes.push('ADS: "' + adsEntry.file.getName() + '" from the "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder (first run)');
   } else {
-    throw new Error('Could not find last month\'s ADS ending snapshot. It should be "' + prevAdsName + '" in the "' + m.prevLabel +
+    throw new Error('Could not find last month\'s ADS ending snapshot. It should be "' + prevAdsBase + '.csv" in the "' + m.prevLabel +
       '" folder (made automatically when ' + m.prevLabel + ' was built). First run only: put last month\'s ADS snapshot CSV in a subfolder named "' +
       CONFIG.STARTING_BALANCES_SUBFOLDER + '" inside "' + m.label + '".' + (boot && boot.byType.ADS.length > 1 ? ' (That subfolder has more than one ADS snapshot.)' : ''));
   }
 
   // Amazon (Rule 4.2): Beginning comes from THIS month's ledger (1st-of-month rows), so nothing is required here.
   // Rule 4.2a: if last month's ledger can be found, it is used only for the tie-out on Checks (never stops the run).
-  var prevLedgerName = 'AMZ Inventory Ledger ' + m.prevEndStr + '.csv';
-  var ledFile = prevFolder ? fileByName_(prevFolder, prevLedgerName) : null;
-  var ledText = null, ledLabel = null, amzPrev = { rows: null, source: null, problem: null };
-  if (ledFile) {
-    ledText = ledFile.getBlob().getDataAsString();
-    ledLabel = '"' + prevLedgerName + '" in the ' + m.prevLabel + ' folder';
-  } else if (boot && boot.byType.LEDGER.length === 1) {
-    ledText = boot.byType.LEDGER[0].text;
-    ledLabel = '"' + boot.byType.LEDGER[0].file.getName() + '" in the "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder';
-  } else if (boot && boot.byType.LEDGER.length > 1) {
-    amzPrev.problem = 'The "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder has more than one Amazon ledger — keep only the one ending ' + m.prevEndMDY + '.';
-  } else {
-    amzPrev.source = 'looked for "' + prevLedgerName + '" in the ' + m.prevLabel + ' folder';
-  }
-  if (ledText !== null) {
-    amzPrev.source = ledLabel;
-    try {
-      if (identifyText_(ledText) !== 'LEDGER') throw new Error(ledLabel + ' is not an Amazon Inventory Ledger.');
-      amzPrev.rows = ledgerLastDateRows_(toTable_(parseCsv_(ledText), 'last month\'s Amazon ledger'), m.prevEndSerial, ledLabel);
-    } catch (err) {
-      amzPrev.problem = err.message + ' Fix or remove that file and run again to get the tie-out.';
+  var prevLedgerBase = 'AMZ Inventory Ledger ' + m.prevEndStr;
+  var amzPrev = { rows: null, source: null, problem: null };
+  var ledEntry = null, ledLabel = null;
+  try {
+    var ledFound = prevFolder ? monthFileEntry_(prevFolder, prevLedgerBase) : null;
+    if (ledFound) {
+      ledEntry = ledFound;
+      ledLabel = '"' + ledFound.file.getName() + '" in the ' + m.prevLabel + ' folder';
+    } else if (boot && boot.byType.LEDGER.length === 1) {
+      ledEntry = boot.byType.LEDGER[0];
+      ledEntry.type = 'LEDGER';
+      ledLabel = '"' + ledEntry.file.getName() + '" in the "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder';
+    } else if (boot && boot.byType.LEDGER.length > 1) {
+      amzPrev.problem = 'The "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder has more than one Amazon ledger — keep only the one ending ' + m.prevEndMDY + '.';
+    } else {
+      amzPrev.source = 'looked for "' + prevLedgerBase + '.csv" in the ' + m.prevLabel + ' folder';
     }
+    if (ledEntry) {
+      amzPrev.source = ledLabel;
+      if (ledEntry.type !== 'LEDGER') throw new Error(ledLabel + ' is not an Amazon Inventory Ledger.');
+      amzPrev.rows = ledgerLastDateRows_(tableFromEntry_(ledEntry, 'last month\'s Amazon ledger'), m.prevEndSerial, ledLabel);
+    }
+  } catch (err) {
+    amzPrev.rows = null;
+    amzPrev.problem = err.message + ' Fix or remove that file and run again to get the tie-out.';
   }
   notes.push('Amazon: ' + serialToMDY_(m.firstSerial) + ' rows of this month\'s Amazon Inventory Ledger (Starting Warehouse Balance)');
 
   return {
-    ads: toTable_(parseCsv_(adsText), 'starting ADS snapshot'), amzPrevEnd: amzPrev, sourceText: notes.join('; ') + '.',
+    ads: tableFromEntry_(adsEntry, 'starting ADS snapshot'), amzPrevEnd: amzPrev, sourceText: notes.join('; ') + '.',
     // Rule 4.1: a copy of the starting ADS snapshot goes into this month's folder (done after all checks pass).
     copyAdsStartFile: function () {
-      var startCopyName = tabs.adsStart + '.csv';
-      if (!fileByName_(monthFolder, startCopyName)) adsFile.makeCopy(startCopyName, monthFolder);
+      var isSheet = adsEntry.file.getMimeType() === MimeType.GOOGLE_SHEETS;
+      if (monthFileEntry_(monthFolder, tabs.adsStart, true)) return;
+      adsEntry.file.makeCopy(tabs.adsStart + (isSheet ? '' : '.csv'), monthFolder);
     }
   };
+}
+
+/**
+ * Rule 2.3: a renamed raw file, found by its base name whether it ends in ".csv" (any extension) or
+ * was saved as a Google Sheet. Returns {file, type, text|values} or null. Two matches stop the run.
+ * nameOnly = just check it exists (don't read it).
+ */
+function monthFileEntry_(folder, base, nameOnly) {
+  var found = [];
+  var it = folder.getFiles();
+  while (it.hasNext()) {
+    var f = it.next(), n = f.getName();
+    if (f.isTrashed()) continue;
+    if (n === base || (n.indexOf(base + '.') === 0 && /^\.[A-Za-z0-9]+$/.test(n.slice(base.length)))) found.push(f);
+  }
+  if (found.length > 1) {
+    throw new Error('There are ' + found.length + ' files named "' + base + '" in "' + folder.getName() + '": ' +
+      found.map(function (f) { return '"' + f.getName() + '"'; }).join(', ') + '. Keep only one.');
+  }
+  if (!found.length) return null;
+  var file = found[0], entry = { file: file };
+  if (nameOnly) return entry;
+  if (file.getMimeType() === MimeType.GOOGLE_SHEETS) {
+    entry.values = SpreadsheetApp.open(file).getSheets()[0].getDataRange().getValues();
+    entry.type = identifyHeader_(entry.values[0] || []);
+  } else {
+    entry.text = file.getBlob().getDataAsString();
+    entry.type = identifyText_(entry.text);
+  }
+  return entry;
 }
 
 // -----------------------------------------------------------------------------

@@ -31,7 +31,7 @@ Claude Code should then update this file, `src/Config.gs` / `src/Logic.gs`, and 
 
 - **2.1** Two files of the same kind in the month folder stops the run.
 - **2.2** **First run only:** last month's ADS snapshot goes in a subfolder named `Starting Balances` inside the month folder. Optionally, an Amazon ledger that ends on last month's final day can go there too — it is only used for the tie-out check (rule 4.2a).
-- **2.3** After a successful build, raw files are renamed to match their tab names (e.g. `ADS Ending Balance 09.30.2026.csv`). Next month uses these names to find its starting balances.
+- **2.3** After a successful build, raw files are renamed to match their tab names (e.g. `ADS Ending Balance 09.30.2026.csv`). Next month uses these names to find its starting balances. The name is matched with or without `.csv`, and a file saved as a Google Sheet under that name also works.
 - **2.4** An Excel (`.xlsx`) file in the month folder stops the run — save it as CSV or Google Sheet instead. Other unrecognized files are ignored and listed on Checks.
 
 ## 3. Tab names
@@ -53,7 +53,7 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
 
 - **4.1 ADS Starting** = last month's ADS ending snapshot (`ADS Ending Balance <last month end>.csv` in last month's folder). It is also copied into this month's folder as `ADS Starting Balance <date>.csv`.
 - **4.2 AMZ Starting** = the rows of **this month's** ledger dated the **1st of the month** (all warehouses, all dispositions). The value used is *Starting Warehouse Balance*. Last month's ledger is not needed.
-- **4.2a Tie-out (warning only):** if last month's ledger is found (`AMZ Inventory Ledger <last month end>.csv` in last month's folder, or on the first run a ledger in the `Starting Balances` subfolder), Checks compares, per Amazon MSKU, its *Ending Warehouse Balance* on last month's final day with this month's 1st-of-month *Starting Warehouse Balance*. Any difference is a FLAG on Checks; the run never stops for it. If no last-month ledger is found, Checks says it was not compared.
+- **4.2a Tie-out (warning only):** if last month's ledger is found (`AMZ Inventory Ledger <last month end>.csv` in last month's folder, or on the first run a ledger in the `Starting Balances` subfolder), Checks compares, per Amazon SKU (our SKU after the AMZ SKU Map, e.g. `A0030 - TEMP SKU` shows as `A0030`), its *Ending Warehouse Balance* on last month's final day with this month's 1st-of-month *Starting Warehouse Balance*. Any difference is a FLAG on Checks; the run never stops for it. If no last-month ledger is found, Checks says it was not compared.
 - **4.3 MFG Starting** = last month's MFG Inventory tab (MFG, SKU, EOM Qty), copied from last month's workbook.
 - **4.4** First run (no last-month folder/workbook): ADS comes from the `Starting Balances` subfolder; MFG Starting is created empty for you to type (Checks flags it until you do). Amazon needs nothing extra (rule 4.2).
 
@@ -131,7 +131,7 @@ Each line shows **OK**, **FLAG** (needs attention), **CHECK** (confirm by eye) o
 
 - **12.1** SKUs with no COGS cost (cells show "NO COST" and are left out of totals).
 - **12.2** SKUs with no description.
-- **12.3** Amazon rows with no SKU mapping; AMZ SKU Map entries added this run.
+- **12.3** Amazon rows with no SKU mapping; AMZ SKU Map entries added this run. An ASIN or MSKU whose AMZ SKU Map rows point at different SKUs is a FLAG (only the first matching row is used).
 - **12.4** Shopify lines with no SKU (gift cards etc.; not counted anywhere).
 - **12.5** Rows where Expected Ending Inventory is negative.
 - **12.6** MFG Starting / MFG Inventory filled in; SKUs typed as numbers on the yellow tabs (they must be text to match).
