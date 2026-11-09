@@ -30,7 +30,7 @@ Claude Code should then update this file, `src/Config.gs` / `src/Logic.gs`, and 
 | ADS work orders (`ProductionLabor…xls`) | the page says "Production Detail Worksheet Report" | yes |
 
 - **2.1** Two files of the same kind in the month folder stops the run.
-- **2.2** **First run only:** last month's ADS snapshot and an Amazon ledger that ends on last month's final day go in a subfolder named `Starting Balances` inside the month folder.
+- **2.2** **First run only:** last month's ADS snapshot goes in a subfolder named `Starting Balances` inside the month folder. Optionally, an Amazon ledger that ends on last month's final day can go there too — it is only used for the tie-out check (rule 4.2a).
 - **2.3** After a successful build, raw files are renamed to match their tab names (e.g. `ADS Ending Balance 09.30.2026.csv`). Next month uses these names to find its starting balances.
 - **2.4** An Excel (`.xlsx`) file in the month folder stops the run — save it as CSV or Google Sheet instead. Other unrecognized files are ignored and listed on Checks.
 
@@ -52,9 +52,10 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
 ## 4. Starting balances (start of month = last month's end)
 
 - **4.1 ADS Starting** = last month's ADS ending snapshot (`ADS Ending Balance <last month end>.csv` in last month's folder). It is also copied into this month's folder as `ADS Starting Balance <date>.csv`.
-- **4.2 AMZ Starting** = the rows of last month's ledger (`AMZ Inventory Ledger <last month end>.csv`) that carry its **last date**, which must be last month's final day. The value used is *Ending Warehouse Balance*.
+- **4.2 AMZ Starting** = the rows of **this month's** ledger dated the **1st of the month** (all warehouses, all dispositions). The value used is *Starting Warehouse Balance*. Last month's ledger is not needed.
+- **4.2a Tie-out (warning only):** if last month's ledger is found (`AMZ Inventory Ledger <last month end>.csv` in last month's folder, or on the first run a ledger in the `Starting Balances` subfolder), Checks compares, per Amazon MSKU, its *Ending Warehouse Balance* on last month's final day with this month's 1st-of-month *Starting Warehouse Balance*. Any difference is a FLAG on Checks; the run never stops for it. If no last-month ledger is found, Checks says it was not compared.
 - **4.3 MFG Starting** = last month's MFG Inventory tab (MFG, SKU, EOM Qty), copied from last month's workbook.
-- **4.4** First run (no last-month folder/workbook): ADS and Amazon come from the `Starting Balances` subfolder; MFG Starting is created empty for you to type (Checks flags it until you do).
+- **4.4** First run (no last-month folder/workbook): ADS comes from the `Starting Balances` subfolder; MFG Starting is created empty for you to type (Checks flags it until you do). Amazon needs nothing extra (rule 4.2).
 
 ## 5. Raw reports: what is kept and what is changed
 
@@ -101,7 +102,7 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
 
 | Column | ADS | Amazon | MFG |
 |---|---|---|---|
-| Beginning | ADS Starting *Qty On Hand* | AMZ Starting *Ending Warehouse Balance* | MFG Starting *EOM Qty* |
+| Beginning | ADS Starting *Qty On Hand* | AMZ Starting *Starting Warehouse Balance* (1st-of-month rows of this month's ledger) | MFG Starting *EOM Qty* |
 | Receiving | ADS Receipts *Qty* + Work Orders *Pieces* (kits built) | Ledger *Receipts* (whole month) | MFG Inventory *Received Qty* |
 | Sold / Used | Bundle Map component units (every Shopify channel incl. CX) + Manual Orders *QUANTITY* (MANUAL and AMAZON) + Kit Consumption child units | Business Report *Units Ordered* | **Calculated** = Beginning + Receiving − Actual |
 | Expected Ending | Beginning + Receiving − Sold/Used | same | same |
@@ -124,6 +125,8 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
 
 ## 12. Checks tab
 
+Checks is the internal QC tab: every callout lives here. Nothing else in the workbook points at it, so **delete it before sending** the workbook out (it is rebuilt on the next run).
+
 Each line shows **OK**, **FLAG** (needs attention), **CHECK** (confirm by eye) or **INFO**:
 
 - **12.1** SKUs with no COGS cost (cells show "NO COST" and are left out of totals).
@@ -135,6 +138,7 @@ Each line shows **OK**, **FLAG** (needs attention), **CHECK** (confirm by eye) o
 - **12.7** Inventory Valuation total = sum of block subtotals.
 - **12.8** Work orders parsed completely (lines = report TOTAL).
 - **12.9** Where the starting balances came from; where the Shopify data came from; files ignored; build time.
+- **12.10** Amazon starting balance ties to last month's ending (rule 4.2a): OK, FLAG with the MSKUs that differ, or INFO if last month's ledger wasn't found.
 
 ## 13. Shopify Sell Thru file (replaces the old "DairyPill Monthly Sell Thru" script)
 

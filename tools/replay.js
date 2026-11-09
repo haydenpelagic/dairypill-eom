@@ -30,7 +30,10 @@ const inputs = {
   ads: table('ads_end.csv'),
   adsStart: table('ads_start.csv'),
   ledger: table('amazon_ledger_full.csv'),
-  amzStart: L.ledgerLastDateRows_(table('amazon_start.csv'), m.prevEndSerial, 'amazon_start.csv'),
+  // Rule 4.2a: last month's ledger is optional and only used for the tie-out on Checks.
+  amzPrevEnd: has('amazon_start.csv')
+    ? { rows: L.ledgerLastDateRows_(table('amazon_start.csv'), m.prevEndSerial, 'amazon_start.csv'), source: 'amazon_start.csv', problem: null }
+    : { rows: null, source: 'no amazon_start.csv', problem: null },
   biz: table('amazon_sales.csv'),
   shopify: table('shopify.csv'),
   manual: table('manual_orders.csv'),

@@ -40,7 +40,7 @@ function buildEOM() {
   // Rule 4: starting balances (also checked before anything is written).
   var start = findStartingBalances_(parent, monthFolder, m);
   inputs.adsStart = start.ads;
-  inputs.amzStart = start.amz;
+  inputs.amzPrevEnd = start.amzPrevEnd;
   inputs.bomValues = readBomSource_();
 
   // Rule 13.2: Shopify goes through the standalone Sell Thru file.
@@ -197,27 +197,35 @@ function findStartingBalances_(parent, monthFolder, m) {
       CONFIG.STARTING_BALANCES_SUBFOLDER + '" inside "' + m.label + '".' + (boot && boot.byType.ADS.length > 1 ? ' (That subfolder has more than one ADS snapshot.)' : ''));
   }
 
-  // Amazon (Rule 4.2)
+  // Amazon (Rule 4.2): Beginning comes from THIS month's ledger (1st-of-month rows), so nothing is required here.
+  // Rule 4.2a: if last month's ledger can be found, it is used only for the tie-out on Checks (never stops the run).
   var prevLedgerName = 'AMZ Inventory Ledger ' + m.prevEndStr + '.csv';
   var ledFile = prevFolder ? fileByName_(prevFolder, prevLedgerName) : null;
-  var ledText, ledLabel;
+  var ledText = null, ledLabel = null, amzPrev = { rows: null, source: null, problem: null };
   if (ledFile) {
     ledText = ledFile.getBlob().getDataAsString();
-    if (identifyText_(ledText) !== 'LEDGER') throw new Error('"' + prevLedgerName + '" in the ' + m.prevLabel + ' folder is not an Amazon Inventory Ledger.');
-    ledLabel = '"' + prevLedgerName + '" from the ' + m.prevLabel + ' folder';
+    ledLabel = '"' + prevLedgerName + '" in the ' + m.prevLabel + ' folder';
   } else if (boot && boot.byType.LEDGER.length === 1) {
     ledText = boot.byType.LEDGER[0].text;
-    ledLabel = '"' + boot.byType.LEDGER[0].file.getName() + '" from the "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder (first run)';
+    ledLabel = '"' + boot.byType.LEDGER[0].file.getName() + '" in the "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder';
+  } else if (boot && boot.byType.LEDGER.length > 1) {
+    amzPrev.problem = 'The "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder has more than one Amazon ledger — keep only the one ending ' + m.prevEndMDY + '.';
   } else {
-    throw new Error('Could not find last month\'s Amazon ledger. It should be "' + prevLedgerName + '" in the "' + m.prevLabel +
-      '" folder. First run only: put an Amazon Inventory Ledger that ends on ' + m.prevEndMDY + ' in a subfolder named "' +
-      CONFIG.STARTING_BALANCES_SUBFOLDER + '" inside "' + m.label + '".' + (boot && boot.byType.LEDGER.length > 1 ? ' (That subfolder has more than one ledger.)' : ''));
+    amzPrev.source = 'looked for "' + prevLedgerName + '" in the ' + m.prevLabel + ' folder';
   }
-  var amz = ledgerLastDateRows_(toTable_(parseCsv_(ledText), 'starting Amazon ledger'), m.prevEndSerial, 'The starting Amazon ledger (' + ledLabel + ')');
-  notes.push('Amazon: last-day (' + m.prevEndMDY + ') rows of ' + ledLabel);
+  if (ledText !== null) {
+    amzPrev.source = ledLabel;
+    try {
+      if (identifyText_(ledText) !== 'LEDGER') throw new Error(ledLabel + ' is not an Amazon Inventory Ledger.');
+      amzPrev.rows = ledgerLastDateRows_(toTable_(parseCsv_(ledText), 'last month\'s Amazon ledger'), m.prevEndSerial, ledLabel);
+    } catch (err) {
+      amzPrev.problem = err.message + ' Fix or remove that file and run again to get the tie-out.';
+    }
+  }
+  notes.push('Amazon: ' + serialToMDY_(m.firstSerial) + ' rows of this month\'s Amazon Inventory Ledger (Starting Warehouse Balance)');
 
   return {
-    ads: toTable_(parseCsv_(adsText), 'starting ADS snapshot'), amz: amz, sourceText: notes.join('; ') + '.',
+    ads: toTable_(parseCsv_(adsText), 'starting ADS snapshot'), amzPrevEnd: amzPrev, sourceText: notes.join('; ') + '.',
     // Rule 4.1: a copy of the starting ADS snapshot goes into this month's folder (done after all checks pass).
     copyAdsStartFile: function () {
       var startCopyName = tabs.adsStart + '.csv';

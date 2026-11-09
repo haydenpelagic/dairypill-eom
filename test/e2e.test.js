@@ -113,6 +113,10 @@ test('1. first run for September builds the full workbook', () => {
   assert.match(res('MFG Inventory filled in'), /^FLAG/);
   assert.match(res('MFG Starting Balance filled in'), /^FLAG/);
   assert.match(checks.find((x) => x[1] === 'Starting balances came from')[3], /Starting Balances" subfolder \(first run\)/);
+  // Rule 4.2a: optional August ledger in Starting Balances ties to September's 9/1 starting balance
+  const tie = checks.find((x) => x[1] === 'Amazon starting balance = last month\'s ending');
+  assert.equal(tie[2], 'OK');
+  assert.match(tie[3], /ledger 8-31\.csv/);
   assert.match(checks.find((x) => x[1] === 'Files in the folder that were ignored')[3], /notes\.pdf/);
 });
 
@@ -163,11 +167,20 @@ test('3. October carries everything forward from September (first-run workbook n
   assert.equal(tabs.adsStart, 'ADS Starting Balance 09.30.2026');
   const wb = calc(ss);
   for (const s of ss.getSheets()) wb.evaluateAll(s.getName());
-  // ADS start = September's ADS ending; Amazon start = September ledger's 9/30 rows (110 + 5 expired)
+  // ADS start = September's ADS ending
   const ads = rowOf(ss, tabs.variance, 'ADS', '80090');
   assert.equal(wb.value(tabs.variance, ads, COLS[0]), 170);
+  // Rule 4.2: Amazon start = October ledger's 10/01 Starting Warehouse Balance (100 + 20), NOT September's 9/30 ending (110 + 5)
   const amz = rowOf(ss, tabs.variance, 'Amazon', 'A0030');
-  assert.equal(wb.value(tabs.variance, amz, COLS[0]), 115);
+  assert.equal(wb.value(tabs.variance, amz, COLS[0]), 120);
+  assert.equal(ss.getSheetByName(tabs.amzStart).rawValues().length, 4, 'AMZ Starting tab = the three 10/01 rows + header');
+  // Rule 4.2a: the differences are flagged on Checks, run not stopped
+  const tieRow = ss.getSheetByName(tabs.checks).rawValues().find((x) => x[1] === 'Amazon starting balance = last month\'s ending');
+  assert.equal(tieRow[2], 'FLAG: 3 MSKU(s) differ');
+  assert.match(tieRow[3], /A0030 - TEMP SKU: 09\/30\/2026 ending 115 vs 10\/01\/2026 starting 120 \(\+5\)/);
+  assert.match(tieRow[3], /A80002: 09\/30\/2026 ending 25 vs 10\/01\/2026 starting 30 \(\+5\)/);
+  assert.match(tieRow[3], /50001: 09\/30\/2026 ending 4 vs 10\/01\/2026 starting 0 \(-4\)/);
+  assert.match(tieRow[3], /AMZ Inventory Ledger 09\.30\.2026\.csv" in the September 2026 folder/);
   // MFG start = September's MFG Inventory EOM
   const vq = rowOf(ss, tabs.variance, 'VitaQuest', '70003');
   assert.equal(wb.value(tabs.variance, vq, COLS[0]), 120);

@@ -56,6 +56,7 @@ var CONFIG = {
     ADS:     { sku: 'Stock Number', qty: 'Qty On Hand',
                numeric: ['Shelf Life', 'Qty Picked (7 Days)', 'Qty Picked (30 Days)', 'Qty On Hand', 'Qty On Hand (S1)', 'Qty On Hand (S2)', 'Qty On Hand (S3)', 'Projected Months of Inventory'] },
     LEDGER:  { date: 'Date', asin: 'ASIN', msku: 'MSKU', receipts: 'Receipts', ending: 'Ending Warehouse Balance',
+               starting: 'Starting Warehouse Balance', // Rule 4.2: Amazon Beginning = this on the 1st-of-month rows
                numericFrom: 'Starting Warehouse Balance', numericTo: 'Unknown Events' },
     BIZ:     { asin: '(Child) ASIN', units: 'Units Ordered', numericFrom: 'Sessions - Total' },
     SHOPIFY: { name: 'Name', sku: 'Lineitem sku', qty: 'Lineitem quantity', tags: 'Tags',
@@ -152,7 +153,7 @@ function buildEOM() {
   // Rule 4: starting balances (also checked before anything is written).
   var start = findStartingBalances_(parent, monthFolder, m);
   inputs.adsStart = start.ads;
-  inputs.amzStart = start.amz;
+  inputs.amzPrevEnd = start.amzPrevEnd;
   inputs.bomValues = readBomSource_();
 
   // Rule 13.2: Shopify goes through the standalone Sell Thru file.
@@ -309,27 +310,35 @@ function findStartingBalances_(parent, monthFolder, m) {
       CONFIG.STARTING_BALANCES_SUBFOLDER + '" inside "' + m.label + '".' + (boot && boot.byType.ADS.length > 1 ? ' (That subfolder has more than one ADS snapshot.)' : ''));
   }
 
-  // Amazon (Rule 4.2)
+  // Amazon (Rule 4.2): Beginning comes from THIS month's ledger (1st-of-month rows), so nothing is required here.
+  // Rule 4.2a: if last month's ledger can be found, it is used only for the tie-out on Checks (never stops the run).
   var prevLedgerName = 'AMZ Inventory Ledger ' + m.prevEndStr + '.csv';
   var ledFile = prevFolder ? fileByName_(prevFolder, prevLedgerName) : null;
-  var ledText, ledLabel;
+  var ledText = null, ledLabel = null, amzPrev = { rows: null, source: null, problem: null };
   if (ledFile) {
     ledText = ledFile.getBlob().getDataAsString();
-    if (identifyText_(ledText) !== 'LEDGER') throw new Error('"' + prevLedgerName + '" in the ' + m.prevLabel + ' folder is not an Amazon Inventory Ledger.');
-    ledLabel = '"' + prevLedgerName + '" from the ' + m.prevLabel + ' folder';
+    ledLabel = '"' + prevLedgerName + '" in the ' + m.prevLabel + ' folder';
   } else if (boot && boot.byType.LEDGER.length === 1) {
     ledText = boot.byType.LEDGER[0].text;
-    ledLabel = '"' + boot.byType.LEDGER[0].file.getName() + '" from the "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder (first run)';
+    ledLabel = '"' + boot.byType.LEDGER[0].file.getName() + '" in the "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder';
+  } else if (boot && boot.byType.LEDGER.length > 1) {
+    amzPrev.problem = 'The "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder has more than one Amazon ledger — keep only the one ending ' + m.prevEndMDY + '.';
   } else {
-    throw new Error('Could not find last month\'s Amazon ledger. It should be "' + prevLedgerName + '" in the "' + m.prevLabel +
-      '" folder. First run only: put an Amazon Inventory Ledger that ends on ' + m.prevEndMDY + ' in a subfolder named "' +
-      CONFIG.STARTING_BALANCES_SUBFOLDER + '" inside "' + m.label + '".' + (boot && boot.byType.LEDGER.length > 1 ? ' (That subfolder has more than one ledger.)' : ''));
+    amzPrev.source = 'looked for "' + prevLedgerName + '" in the ' + m.prevLabel + ' folder';
   }
-  var amz = ledgerLastDateRows_(toTable_(parseCsv_(ledText), 'starting Amazon ledger'), m.prevEndSerial, 'The starting Amazon ledger (' + ledLabel + ')');
-  notes.push('Amazon: last-day (' + m.prevEndMDY + ') rows of ' + ledLabel);
+  if (ledText !== null) {
+    amzPrev.source = ledLabel;
+    try {
+      if (identifyText_(ledText) !== 'LEDGER') throw new Error(ledLabel + ' is not an Amazon Inventory Ledger.');
+      amzPrev.rows = ledgerLastDateRows_(toTable_(parseCsv_(ledText), 'last month\'s Amazon ledger'), m.prevEndSerial, ledLabel);
+    } catch (err) {
+      amzPrev.problem = err.message + ' Fix or remove that file and run again to get the tie-out.';
+    }
+  }
+  notes.push('Amazon: ' + serialToMDY_(m.firstSerial) + ' rows of this month\'s Amazon Inventory Ledger (Starting Warehouse Balance)');
 
   return {
-    ads: toTable_(parseCsv_(adsText), 'starting ADS snapshot'), amz: amz, sourceText: notes.join('; ') + '.',
+    ads: toTable_(parseCsv_(adsText), 'starting ADS snapshot'), amzPrevEnd: amzPrev, sourceText: notes.join('; ') + '.',
     // Rule 4.1: a copy of the starting ADS snapshot goes into this month's folder (done after all checks pass).
     copyAdsStartFile: function () {
       var startCopyName = tabs.adsStart + '.csv';
@@ -890,7 +899,43 @@ function checkLedgerCoversMonth_(table, m) {
   return { first: m.firstSerial, last: m.endSerial };
 }
 
-/** Rule 4.2: rows carrying the ledger's LAST date; that date must be last month's end. */
+/** Rule 4.2: this month's ledger rows dated the 1st (their Starting Warehouse Balance is Amazon Beginning). */
+function ledgerFirstDateRows_(table, m) {
+  var di = requireHeader_(table.header, CONFIG.COLUMNS.LEDGER.date, 'Amazon Inventory Ledger');
+  requireHeader_(table.header, CONFIG.COLUMNS.LEDGER.starting, 'Amazon Inventory Ledger');
+  var rows = table.rows.filter(function (r, i) {
+    return parseMDY_(r[di], 'in the Amazon Inventory Ledger, row ' + (i + 2)) === m.firstSerial;
+  });
+  if (!rows.length) throw new Error('The Amazon Inventory Ledger has no rows dated ' + serialToMDY_(m.firstSerial) + ', so there is no Amazon starting balance.');
+  return { header: table.header, rows: rows };
+}
+
+/**
+ * Rule 4.2a: per Amazon MSKU, last month's final-day Ending Warehouse Balance vs this month's
+ * 1st-of-month Starting Warehouse Balance. Returns the MSKUs that differ (empty = ties).
+ */
+function amzTieOut_(prevEndRows, firstRows) {
+  var L = CONFIG.COLUMNS.LEDGER;
+  function sums(tbl, colName, where) {
+    var mi = requireHeader_(tbl.header, L.msku, where), vi = requireHeader_(tbl.header, colName, where);
+    var out = {};
+    tbl.rows.forEach(function (r, i) {
+      var k = cleanSku_(r[mi]);
+      out[k] = (out[k] || 0) + toNumber_(r[vi], 'in ' + where + ' (' + colName + '), row ' + (i + 2));
+    });
+    return out;
+  }
+  var prev = sums(prevEndRows, L.ending, 'last month\'s Amazon ledger');
+  var cur = sums(firstRows, L.starting, 'the Amazon Inventory Ledger');
+  var diffs = [];
+  uniqueSorted_(Object.keys(prev).concat(Object.keys(cur))).forEach(function (k) {
+    var a = prev[k] || 0, b = cur[k] || 0;
+    if (Math.abs(a - b) > 1e-9) diffs.push({ msku: k, prevEnd: a, start: b, diff: b - a });
+  });
+  return diffs;
+}
+
+/** Rule 4.2a: rows carrying the ledger's LAST date; that date must be last month's end. */
 function ledgerLastDateRows_(table, expectedSerial, sourceLabel) {
   var di = requireHeader_(table.header, CONFIG.COLUMNS.LEDGER.date, sourceLabel);
   var max = -Infinity;
@@ -900,8 +945,8 @@ function ledgerLastDateRows_(table, expectedSerial, sourceLabel) {
     return s;
   });
   if (max !== expectedSerial) {
-    throw new Error(sourceLabel + ' ends on ' + serialToMDY_(max) + ' but the starting balance must come from ' +
-      serialToMDY_(expectedSerial) + '.');
+    throw new Error(sourceLabel + ' ends on ' + serialToMDY_(max) + ' but it should end on ' +
+      serialToMDY_(expectedSerial) + ' (last month\'s final day).');
   }
   return { header: table.header, rows: table.rows.filter(function (_, i) { return serials[i] === max; }) };
 }
@@ -991,7 +1036,7 @@ function ledgerModel_(name, table, tabs) {
   var msku = colLetter_(requireHeader_(table.header, L.msku, 'Amazon Inventory Ledger') + 1);
   return rawModel_(name, table, {
     numericCols: rangeIndexes_(table.header, L.numericFrom, L.numericTo, 'Amazon Inventory Ledger'),
-    strictCols: indexesOf_(table.header, [L.receipts, L.ending]),
+    strictCols: indexesOf_(table.header, [L.receipts, L.ending, L.starting]),
     dateCols: [requireHeader_(table.header, L.date, 'Amazon Inventory Ledger')],
     extraCols: [{
       header: 'SKU (mapped)',
@@ -1295,7 +1340,7 @@ function varianceSourceFormulas_(kind, ctx, r) {
   }
   if (kind === 'AMZ') {
     return {
-      begin: '=SUMIFS(' + colRef_(t.amzStart, c.amzStart.ending) + ',' + colRef_(t.amzStart, c.amzStart.mapped) + ',' + B + ')',
+      begin: '=SUMIFS(' + colRef_(t.amzStart, c.amzStart.starting) + ',' + colRef_(t.amzStart, c.amzStart.mapped) + ',' + B + ')',
       recv: '=SUMIFS(' + colRef_(t.ledger, c.ledger.receipts) + ',' + colRef_(t.ledger, c.ledger.mapped) + ',' + B + ')',
       sold: '=SUMIFS(' + colRef_(t.biz, c.biz.units) + ',' + colRef_(t.biz, c.biz.mapped) + ',' + B + ')',
       actual: '=SUMIFS(' + colRef_(t.ledger, c.ledger.ending) + ',' + colRef_(t.ledger, c.ledger.mapped) + ',' + B + ',' +
@@ -1521,6 +1566,19 @@ function checksModel_(ctx, info) {
     info.kitsWithoutBom.length ? 'Components not deducted for: ' + info.kitsWithoutBom.join(', ') + ' — add them to the Ops Hub BOM.' : '');
   add('6.1', 'BOM duplicate rows removed', info.bomDuplicates.length ? 'INFO' : 'OK', info.bomDuplicates.join('; '));
   add('12.9', 'Starting balances came from', 'INFO', info.startSources);
+  var tie = info.amzTie || {};
+  var first = serialToMDY_(ctx.month.firstSerial), prevEnd = serialToMDY_(ctx.month.firstSerial - 1);
+  if (tie.problem) {
+    add('12.10', 'Amazon starting balance = last month\'s ending', 'FLAG: not compared', tie.problem);
+  } else if (!tie.diffs) {
+    add('12.10', 'Amazon starting balance = last month\'s ending', 'INFO', 'Not compared — no ' + prevEnd + ' Amazon ledger found (' + (tie.source || 'none') + ').');
+  } else {
+    add('12.10', 'Amazon starting balance = last month\'s ending', tie.diffs.length ? 'FLAG: ' + tie.diffs.length + ' MSKU(s) differ' : 'OK',
+      tie.diffs.length
+        ? tie.diffs.map(function (d) { return d.msku + ': ' + prevEnd + ' ending ' + d.prevEnd + ' vs ' + first + ' starting ' + d.start + ' (' + (d.diff > 0 ? '+' : '') + d.diff + ')'; }).join('; ') +
+          '. Beginning Inventory uses the ' + first + ' figure. Compared with ' + tie.source + '.'
+        : 'Every MSKU\'s ' + first + ' starting balance equals its ' + prevEnd + ' ending balance in ' + tie.source + '.');
+  }
   add('5.2', 'Amazon ledger covers the whole month', 'OK', 'Every day from ' + serialToMDY_(ctx.month.firstSerial) + ' to ' + ctx.month.endMDY + ' is present.');
   add('5.3', 'Files with no dates inside', 'CHECK', 'The ADS snapshot and the Amazon Business Report contain no dates. Confirm the ADS snapshot was pulled on ' +
     ctx.month.endMDY + ' and the Business Report covers ' + serialToMDY_(ctx.month.firstSerial) + '–' + ctx.month.endMDY + '.');
@@ -1539,7 +1597,7 @@ function q2_(tab) { return "'" + String(tab).replace(/'/g, "''") + "'"; }
 function readmeModel_(ctx) {
   var t = ctx.tabs;
   var rows = [['Tab', 'What it is', 'Rule (RULES.md)'],
-    [t.checks, 'Automatic checks. Anything that says FLAG needs attention before sending.', '12'],
+    [t.checks, 'QC only: automatic checks. Anything that says FLAG needs attention. Delete this tab before sending — nothing points at it.', '12'],
     [t.variance, 'Beginning + Receiving − Sold/Used = Expected; compared with Actual. Blocks: ADS, Amazon, one per MFG.', '9'],
     [t.valuation, 'Actual ending units × COGS cost. Totals box at the top.', '10'],
     [t.outbound, 'Units and cost by channel for every SKU sold.', '11'],
@@ -1553,7 +1611,7 @@ function readmeModel_(ctx) {
     [t.kit, 'Components used by kits built this month (BOM qty × kits built).', '8.2'],
     [t.adsStart, 'Last month\'s ADS ending snapshot.', '4.1'],
     [t.adsEnd, 'ADS snapshot at month end, as received.', '5'],
-    [t.amzStart, 'Last month\'s Amazon ledger, last-day rows only.', '4.2'],
+    [t.amzStart, 'This month\'s Amazon ledger, 1st-of-month rows only; Beginning uses Starting Warehouse Balance.', '4.2'],
     [t.ledger, 'Amazon Inventory Ledger for the whole month (daily).', '5.2'],
     [t.biz, 'Amazon Business Report; Units Ordered = Amazon units sold.', '5.3'],
     [t.shopify, 'Shopify orders; Order Tags and Channel columns added at the right.', '5.4'],
@@ -1573,7 +1631,8 @@ function readmeModel_(ctx) {
 /**
  * inputs = {
  *   month, todayStr, builtAt,
- *   ads, adsStart, ledger, amzStart, biz, shopify, manual  : {header, rows}
+ *   ads, adsStart, ledger, biz, shopify, manual  : {header, rows}
+ *   amzPrevEnd : {rows: {header, rows} | null, source: text, problem: text | null}  (Rule 4.2a tie-out; optional)
  *   workOrders : parseWorkOrdersHtml_ result
  *   bomValues  : raw values from the Ops Hub BOM columns
  *   cogs       : {header, rows}                 (values)
@@ -1591,10 +1650,14 @@ function buildWorkbookModel_(inputs) {
   var C = CONFIG.COLUMNS;
 
   checkLedgerCoversMonth_(inputs.ledger, m);
+  // Rule 4.2: Amazon starting balance = this month's 1st-of-month rows.
+  var amzStart = ledgerFirstDateRows_(inputs.ledger, m);
+  var tie = inputs.amzPrevEnd || {};
+  var amzTie = tie.rows ? { diffs: amzTieOut_(tie.rows, amzStart), source: tie.source } : { diffs: null, source: tie.source, problem: tie.problem };
 
   // --- AMZ SKU Map (Rule 6.3)
   var pairs = [];
-  [inputs.amzStart, inputs.ledger].forEach(function (tbl) {
+  [amzStart, inputs.ledger].forEach(function (tbl) {
     var mi = headerIndex_(tbl.header, C.LEDGER.msku), ai = headerIndex_(tbl.header, C.LEDGER.asin);
     tbl.rows.forEach(function (r) { pairs.push({ msku: cleanSku_(r[mi]), asin: ai >= 0 ? cleanSku_(r[ai]) : '' }); });
   });
@@ -1604,7 +1667,7 @@ function buildWorkbookModel_(inputs) {
   var adsStartModel = adsModel_(tabs.adsStart, inputs.adsStart);
   var adsEndModel = adsModel_(tabs.adsEnd, inputs.ads);
   var ledgerM = ledgerModel_(tabs.ledger, inputs.ledger, tabs);
-  var amzStartM = ledgerModel_(tabs.amzStart, inputs.amzStart, tabs);
+  var amzStartM = ledgerModel_(tabs.amzStart, amzStart, tabs);
   var bizM = bizModel_(tabs.biz, inputs.biz, tabs);
   var shopM = shopifyModel_(tabs.shopify, inputs.shopify);
   if (inputs.shopifyCopyFrom) shopM.copyFrom = inputs.shopifyCopyFrom;
@@ -1630,8 +1693,8 @@ function buildWorkbookModel_(inputs) {
         mapped: ledgerMapped
       },
       amzStart: {
-        ending: colLetter_(requireHeader_(inputs.amzStart.header, C.LEDGER.ending, 'AMZ starting ledger') + 1),
-        mapped: colLetter_(inputs.amzStart.header.length + 1)
+        starting: colLetter_(requireHeader_(amzStart.header, C.LEDGER.starting, 'Amazon Inventory Ledger') + 1),
+        mapped: colLetter_(amzStart.header.length + 1)
       },
       biz: { units: colLetter_(headerIndex_(inputs.biz.header, C.BIZ.units) + 1), mapped: colLetter_(inputs.biz.header.length + 1) },
       shop: shopifyLetters_(inputs.shopify.header),
@@ -1660,7 +1723,7 @@ function buildWorkbookModel_(inputs) {
     (inputs.adsReceipts || []).map(function (r) { return cleanSku_(r[1]); }),
     kitParents, manualSkus, bundleComponents));
 
-  var ledgerMskus = col(inputs.ledger, C.LEDGER.msku).concat(col(inputs.amzStart, C.LEDGER.msku));
+  var ledgerMskus = col(inputs.ledger, C.LEDGER.msku).concat(col(amzStart, C.LEDGER.msku));
   var bizAsins = col(inputs.biz, C.BIZ.asin);
   var bizUnitsIdx = headerIndex_(inputs.biz.header, C.BIZ.units);
   var amzFromLedger = ledgerMskus.map(function (s) { return lookupMap_(map.rows, 0, s); });
@@ -1710,6 +1773,7 @@ function buildWorkbookModel_(inputs) {
     noDescSkus: allSkus.filter(function (s) { return !descs.desc[s]; }),
     unmappedAsins: uniqueSorted_(unmappedAsins),
     mapAdded: map.added,
+    amzTie: amzTie,
     kitsWithoutBom: kitM.kitsWithoutBom,
     bomDuplicates: bom.duplicates,
     workOrders: { lines: inputs.workOrders.lines.length, fees: inputs.workOrders.feeLines, lineTotal: inputs.workOrders.lineTotal,

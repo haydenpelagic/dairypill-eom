@@ -177,3 +177,28 @@ test('manual tabs: quantities typed as text still count (converted to numbers)',
   assert.equal(w.value(b.tabs.variance, r, 6), 10);
   assert.throws(() => L.buildWorkbookModel_(sampleInputs(L, { adsReceipts: [['PO-1', '50001', 'ten']] })), /Expected a number on ADS Receipts/);
 });
+
+test('Rule 4.2a: Amazon tie-out on Checks — OK, not compared, or problem', () => {
+  const tieRow = (b) => { const ch = b.sheets.find((x) => x.name === b.tabs.checks).values; return ch.find((r) => r[1] === 'Amazon starting balance = last month\'s ending'); };
+  assert.equal(tieRow(built)[2], 'OK');
+  const none = L.buildWorkbookModel_(sampleInputs(L, { amzPrevEnd: { rows: null, source: 'looked in the August 2026 folder', problem: null } }));
+  assert.equal(tieRow(none)[2], 'INFO');
+  assert.match(tieRow(none)[3], /Not compared — no 08\/31\/2026 Amazon ledger found/);
+  const bad = L.buildWorkbookModel_(sampleInputs(L, { amzPrevEnd: { rows: null, source: 'x', problem: 'x ends on 08/30/2026' } }));
+  assert.equal(tieRow(bad)[2], 'FLAG: not compared');
+  // Beginning never depends on last month's ledger
+  const r = findRow(T.variance, 'Amazon', 'A0030');
+  const rNone = none.sheets.find((x) => x.name === T.variance).values.findIndex((v) => v[0] === 'Amazon' && v[1] === 'A0030') + 1;
+  assert.equal(r, rNone);
+  assert.match(sheet(T.variance).values[r - 1][4], /Starting|'AMZ Starting Balance/);
+  assert.equal(val(T.variance, r, 'E'), 120);
+});
+
+test('Rule 4.2: AMZ Starting tab = this month\'s 1st-of-month ledger rows', () => {
+  const v = sheet(T.amzStart).values;
+  assert.equal(v.length, 4);
+  assert.ok(v.slice(1).every((row) => row[0] === v[1][0]));
+  const diffs = L.amzTieOut_({ header: ['MSKU', 'Ending Warehouse Balance'], rows: [['A', '5'], ['A', '1'], ['B', '2']] },
+    { header: ['MSKU', 'Starting Warehouse Balance'], rows: [['A', '6'], ['C', '1']] });
+  assert.deepEqual(plain(diffs), [{ msku: 'B', prevEnd: 2, start: 0, diff: -2 }, { msku: 'C', prevEnd: 0, start: 1, diff: 1 }]);
+});

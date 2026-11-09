@@ -18,8 +18,8 @@ const LEDGER_HEADER = ['Date', 'FNSKU', 'ASIN', 'MSKU', 'Title', 'Disposition', 
   'In Transit Between Warehouses', 'Receipts', 'Customer Shipments', 'Customer Returns', 'Vendor Returns',
   'Warehouse Transfer In/Out', 'Found', 'Lost', 'Damaged', 'Disposed', 'Other Events', 'Ending Warehouse Balance',
   'Unknown Events', 'Location', 'Store'];
-function led(date, asin, msku, disp, receipts, ending, fc) {
-  return [date, asin, asin, msku, 'Title ' + msku, disp, '0', '0', String(receipts), '0', '0', '0', '0', '0', '0', '0', '0', '0',
+function led(date, asin, msku, disp, receipts, ending, fc, starting) {
+  return [date, asin, asin, msku, 'Title ' + msku, disp, String(starting || 0), '0', String(receipts), '0', '0', '0', '0', '0', '0', '0', '0', '0',
     String(ending), '0', fc, ''];
 }
 const mdy = (y, mi, d) => String(mi + 1).padStart(2, '0') + '/' + String(d).padStart(2, '0') + '/' + y;
@@ -43,8 +43,11 @@ function sampleRaw(year, monthIndex) {
     led(mdy(py, pm, pLast), 'B2', 'A80002', 'SELLABLE', 0, 30, 'FC1')];
   const ledger = [LEDGER_HEADER];
   for (let d = 1; d <= last; d++) {
-    ledger.push(led(mdy(year, monthIndex, d), 'B1', 'A0030 - TEMP SKU', 'SELLABLE', d === 10 ? 15 : 0, d === last ? 110 : 900 + d, 'FC1'));
+    ledger.push(led(mdy(year, monthIndex, d), 'B1', 'A0030 - TEMP SKU', 'SELLABLE', d === 10 ? 15 : 0, d === last ? 110 : 900 + d, 'FC1', d === 1 ? 100 : 0));
   }
+  // Rule 4.2: Amazon Beginning = Starting Warehouse Balance on the 1st (A0030 100 + 20 = 120, A80002 30) — ties to amzStart above.
+  ledger.push(led(mdy(year, monthIndex, 1), 'B1', 'A0030 - TEMP SKU', 'SELLABLE', 0, 0, 'FC2', 20));
+  ledger.push(led(mdy(year, monthIndex, 1), 'B2', 'A80002', 'SELLABLE', 0, 30, 'FC1', 30));
   ledger.push(led(mdy(year, monthIndex, last), 'B1', 'A0030 - TEMP SKU', 'EXPIRED', 0, 5, 'FC2'));
   ledger.push(led(mdy(year, monthIndex, last), 'B2', 'A80002', 'SELLABLE', 0, 25, 'FC1'));
   ledger.push(led(mdy(year, monthIndex, last), 'B3', '50001', 'SELLABLE', 5, 4, 'FC3'));
@@ -102,7 +105,7 @@ function sampleInputs(ctx, overrides) {
     ads: t(raw.adsEnd, 'ADS'),
     adsStart: t(raw.adsStart, 'ADS start'),
     ledger: t(raw.ledger, 'ledger'),
-    amzStart: ctx.ledgerLastDateRows_(t(raw.amzStart, 'start ledger'), m.prevEndSerial, 'start ledger'),
+    amzPrevEnd: { rows: ctx.ledgerLastDateRows_(t(raw.amzStart, 'start ledger'), m.prevEndSerial, 'start ledger'), source: 'test ledger', problem: null },
     biz: t(raw.biz, 'biz'),
     shopify: t(raw.shopify, 'shopify'),
     manual: t(raw.manual, 'manual'),

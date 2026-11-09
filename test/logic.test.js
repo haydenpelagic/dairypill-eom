@@ -100,11 +100,11 @@ test('Rule 5.2: ledger must have every day of the month', () => {
   assert.throws(() => L.checkLedgerCoversMonth_({ header, rows: days(1, 30).concat([['10/01/2026', 'X']]) }, m), /outside September 2026/);
 });
 
-test('Rule 4.2: starting rows are the last day of last month only', () => {
+test('Rule 4.2a: tie-out rows are the last day of last month only', () => {
   const t = { header: ['Date', 'MSKU', 'Ending Warehouse Balance'], rows: [['08/30/2026', 'A', '1'], ['08/31/2026', 'A', '2'], ['08/31/2026', 'B', '3']] };
   const out = L.ledgerLastDateRows_(t, L.monthInfo_(2026, 8).prevEndSerial, 'test ledger');
   assert.equal(out.rows.length, 2);
-  assert.throws(() => L.ledgerLastDateRows_(t, L.monthInfo_(2026, 9).prevEndSerial, 'test ledger'), /ends on 08\/31\/2026 but the starting balance must come from 09\/30\/2026/);
+  assert.throws(() => L.ledgerLastDateRows_(t, L.monthInfo_(2026, 9).prevEndSerial, 'test ledger'), /ends on 08\/31\/2026 but it should end on 09\/30\/2026/);
 });
 
 test('Rule 5.4: Shopify lines inherit the order\'s tags; split orders stop the run', () => {
