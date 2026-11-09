@@ -7,8 +7,10 @@
 var CONFIG = {
 
   // ---- Rule 1.1 / 1.2: folders and which month to build ----------------------
-  // The Google Drive folder that holds one subfolder per month ("September 2026").
-  PARENT_FOLDER_ID: 'PASTE_THE_PARENT_FOLDER_ID_HERE',
+  // The Google Drive folder that holds one subfolder per month ("October 2026"):
+  // DairyPill › EOM Reports. Kept here (not typed in Apps Script) because every
+  // deploy replaces the whole script.
+  PARENT_FOLDER_ID: '16H9CCvtmchb2N7dzhcoY9-43PviS-sxn',
   // Leave blank to build LAST calendar month. To force a month, type it exactly
   // like the folder name, e.g. 'September 2026'.
   MONTH_OVERRIDE: '',

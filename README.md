@@ -4,6 +4,6 @@ Builds the monthly end-of-month inventory / COGS workbook for DairyPill's accoun
 
 - **[SETUP.md](SETUP.md)** — one-time setup and the monthly routine (no coding).
 - **[RULES.md](RULES.md)** — the rule set: what every tab and column means. Change behaviour by changing a rule.
-- `dist/DairyPill_EOM.gs` — the single file pasted into Google Apps Script.
+- `dist/` — what is uploaded to Google Apps Script automatically on every push (tests must pass first; see SETUP.md §A.2).
 
 For developers / Claude Code: `npm test` runs everything (the formulas are calculated by a test engine and the entry points run against an in-memory Drive). See [CLAUDE.md](CLAUDE.md).

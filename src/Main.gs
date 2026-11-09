@@ -273,9 +273,14 @@ function monthFileEntry_(folder, base, nameOnly) {
 
 function parentFolder_() {
   if (!CONFIG.PARENT_FOLDER_ID || /PASTE/.test(CONFIG.PARENT_FOLDER_ID)) {
-    throw new Error('Set PARENT_FOLDER_ID at the top of Config.gs to the ID of the "DairyPill EOM" folder (the part of its link after /folders/).');
+    throw new Error('Set PARENT_FOLDER_ID at the top of Config.gs to the ID of the "EOM Reports" folder (the part of its link after /folders/).');
   }
-  return DriveApp.getFolderById(CONFIG.PARENT_FOLDER_ID);
+  try {
+    return DriveApp.getFolderById(CONFIG.PARENT_FOLDER_ID);
+  } catch (err) {
+    throw new Error('Could not open the EOM Reports folder (ID ' + CONFIG.PARENT_FOLDER_ID + ') as ' + Session.getActiveUser().getEmail() +
+      '. Share that folder with this Google account (Editor), or run the script from an account that has access. (' + err.message + ')');
+  }
 }
 
 function subfolder_(parent, name, required) {

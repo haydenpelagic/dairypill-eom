@@ -73,7 +73,14 @@ ctx.CONFIG.MONTH_OVERRIDE = 'September 2026';
 
 test('placeholder folder id gives a plain-English error', () => {
   const g = createGas(); const c = load(g);
+  c.CONFIG.PARENT_FOLDER_ID = 'PASTE_THE_PARENT_FOLDER_ID_HERE';
   assert.throws(() => c.buildEOM(), /Set PARENT_FOLDER_ID at the top of Config.gs/);
+});
+
+test('a folder the account cannot open gives a plain-English error', () => {
+  const g = createGas(); const c = load(g);
+  assert.match(c.CONFIG.PARENT_FOLDER_ID, /^16H9CC/, 'the real EOM Reports folder is set in Config.gs');
+  assert.throws(() => c.buildEOM(), /Could not open the EOM Reports folder .* as tester@example\.com\. Share that folder/);
 });
 
 test('1. first run for September builds the full workbook', () => {

@@ -1,0 +1,58 @@
+# Uploads the script to Google Apps Script on every push that changes it, but ONLY if all tests pass.
+# One-time setup: SETUP.md section C (repository secret CLASPRC_JSON).
+name: Deploy to Apps Script
+
+on:
+  push:
+    paths:
+      - 'src/**'
+      - 'dist/**'
+      - 'appsscript.json'
+      - '.clasp.json'
+      - 'tools/bundle.js'
+      - 'test/**'
+      - 'package.json'
+      - '.github/workflows/deploy-apps-script.yml'
+  workflow_dispatch: {}
+
+# One deploy at a time; a newer push waits for the one in progress.
+concurrency:
+  group: apps-script-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run all tests (deploy stops here if any fail)
+        run: npm test
+
+      - name: Rebuild dist/ and make sure it matches what was pushed
+        run: |
+          npm run bundle
+          if ! git diff --quiet -- dist; then
+            echo "::error::dist/ is out of date. Run 'npm run bundle', commit, and push again."
+            exit 1
+          fi
+
+      - name: Load the Google sign-in for clasp
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+        run: |
+          if [ -z "$CLASPRC_JSON" ]; then
+            echo "::error::The CLASPRC_JSON secret is not set, so nothing was uploaded to Apps Script. See SETUP.md section C."
+            exit 1
+          fi
+          printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+
+      - name: Upload to Apps Script
+        run: npx --yes @google/clasp@2.4.2 push --force
+
+      - name: Summary
+        run: echo "Uploaded commit ${GITHUB_SHA::7} from branch ${GITHUB_REF_NAME} to Apps Script project $(node -p "require('./.clasp.json').scriptId")." >> "$GITHUB_STEP_SUMMARY"

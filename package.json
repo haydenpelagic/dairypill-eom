@@ -5,6 +5,7 @@
   "description": "Google Apps Script that builds the DairyPill end-of-month inventory/COGS workbook. Tests run the pure logic in Node.",
   "scripts": {
     "test": "node --test test/*.test.js",
-    "bundle": "node tools/bundle.js"
+    "bundle": "node tools/bundle.js",
+    "deploy": "npm test && npm run bundle && npx --yes @google/clasp@2.4.2 push --force"
   }
 }

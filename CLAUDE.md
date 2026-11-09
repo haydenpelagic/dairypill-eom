@@ -13,7 +13,9 @@ The owner is non-technical: explain in plain English, never ask them to review c
 - `src/Logic.gs` — pure functions: parsing, SKU lists, and every formula. No Google calls. All tested in Node.
 - `src/Main.gs` — entry points `buildEOM()` / `shopifyOnly()`; Drive reading, starting balances.
 - `src/Sheets.gs` — writing sheet models to Google Sheets.
-- `dist/DairyPill_EOM.gs` — generated bundle the owner pastes into Apps Script. Never edit by hand (`npm run bundle`; a test fails if stale).
+- `dist/` — exactly what clasp uploads to Apps Script: `DairyPill_EOM.gs` (generated bundle) + `appsscript.json` (copied). Never edit by hand (`npm run bundle`; a test fails if stale).
+- `.clasp.json` — Apps Script project (owned by the DairyPill account), `rootDir: dist`.
+- `.github/workflows/deploy-apps-script.yml` — on every push (any branch): `npm test`, check `dist/` is fresh, `clasp push`. Needs repo secret `CLASPRC_JSON` (SETUP.md §A.2).
 - `test/` — `formulaEngine.js` calculates the generated formulas; `gasMock.js` is an in-memory Drive/Sheets so `e2e.test.js` runs the real entry points.
 - `tools/replay.js <folder>` — replays a real month from local CSV exports and compares with the hand-built report (data is never committed).
 
@@ -23,4 +25,5 @@ The owner is non-technical: explain in plain English, never ask them to review c
 - Tab names ≤ 31 chars, no "/" (dates as MM.DD.YYYY).
 - SKU columns are written as text; quantities as numbers.
 - Errors are loud and plain-English; validate all inputs before changing anything in Drive.
-- After any code change: `npm test` must pass, then `npm run bundle`, and remind the owner to re-paste `dist/DairyPill_EOM.gs`.
+- After any code change: `npm test` must pass, then `npm run bundle`, then commit and push — **pushing is the deploy** (GitHub uploads to Apps Script). Don't tell the owner to paste anything; tell them it goes live in about a minute and to check the Actions tab if unsure. Never run `clasp push` from a cloud session.
+- Real Drive/Script IDs live in `src/Config.gs` / `.clasp.json` (never typed in the Apps Script editor — each upload replaces the whole project).

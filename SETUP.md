@@ -1,28 +1,36 @@
 # Setting up and running the DairyPill EOM script
 
-No coding needed. You copy one file into Google Apps Script once; after that you drop reports in a folder and press **Run**.
+No coding needed. Code changes reach Google Apps Script automatically through GitHub; you drop reports in a folder and press **Run**.
 
 ---
 
-## A. One-time setup (about 15 minutes)
+## A. One-time setup
 
-### 1. Make the Drive folders
-1. In Google Drive, create a folder called **DairyPill EOM** (or use an existing one).
-2. Inside it, create one folder per month, named exactly like **September 2026** (full month name, space, year).
-3. Open the **DairyPill EOM** folder and copy its ID from the address bar — the part after `/folders/`.
-   Example: `https://drive.google.com/drive/folders/1AbCdEf...` → the ID is `1AbCdEf...`
+### 1. The Drive folder (done)
+Months live in **DairyPill › EOM Reports**, one subfolder per month named exactly like **October 2026** (full month name, space, year). Its ID is already set in the script (`PARENT_FOLDER_ID` in `src/Config.gs`), so you never type it.
 
-### 2. Create the script
-1. Go to **script.google.com** → **New project**. Click "Untitled project" at the top and rename it **DairyPill EOM**.
-2. Delete everything in the `Code.gs` editor.
-3. Open [`dist/DairyPill_EOM.gs`](dist/DairyPill_EOM.gs) in this repository on GitHub, click the **Copy raw file** button (two overlapping squares, top right of the file), and paste into `Code.gs`.
-4. Near the top, find `PARENT_FOLDER_ID: 'PASTE_THE_PARENT_FOLDER_ID_HERE'` and replace the text between the quotes with your folder ID from step 1.3. Keep the quotes.
-5. Press **Ctrl+S** (Cmd+S on Mac) to save.
-6. Click the **gear icon (Project Settings)** on the left → set **Time zone** to *(GMT-05:00) Eastern Time - New York*.
+### 2. Connect GitHub to Apps Script (about 10 minutes, once)
+The code is **not pasted by hand**. Every time Claude Code pushes a change to GitHub, GitHub runs all the tests and, only if they pass, uploads the script to the Apps Script project **DairyPill EOM** (Script ID `1RblqXtQ…`, owned by the DairyPill Google account). For that, GitHub needs a Google sign-in:
+
+1. **Turn on the Apps Script API** for the Google account you'll sign in with: open https://script.google.com/home/usersettings and switch **Google Apps Script API** to **On**.
+2. **Make sure that account can edit the script.** Either sign in as the DairyPill account, or share the Apps Script project with your own account as **Editor**.
+3. **Get the sign-in file.** In Terminal on your Mac:
+   - If you already use clasp **with that account**, skip to step 4: the file already exists.
+   - Otherwise run `npx @google/clasp@2.4.2 login`. A browser opens; choose the account and click **Allow**.
+     (This replaces any clasp login you use for other projects.)
+4. **Copy it** with `pbcopy < ~/.clasprc.json` (nothing prints — it's now on your clipboard).
+5. **Store it in GitHub:** the repository on GitHub → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**. Name: `CLASPRC_JSON`. Secret: paste. **Add secret**.
+6. **First upload:** GitHub → **Actions** tab → **Deploy to Apps Script** → **Run workflow**. A green check means the script is in Apps Script. A red X shows a plain-English reason at the top of the run.
+
+Good to know:
+- The upload **replaces everything** in that Apps Script project. Don't edit code in the Apps Script editor — it's overwritten on the next upload. Ask Claude Code instead.
+- Any branch Claude pushes goes live once its tests pass. Change the script from **one Claude session at a time**, or the last one to push wins.
+- To cut GitHub's access: Google Account → Security → Third-party connections → remove **clasp**, then delete the secret.
+- Backup (only on your Mac, with clasp signed in): `npm run deploy` runs the tests, rebuilds and uploads.
 
 ### 3. Give it permission (first run only)
 1. In the toolbar dropdown next to **Debug**, choose **buildEOM** and click **Run**.
-2. Google asks for permission → **Review permissions** → pick your account → **Advanced** → **Go to DairyPill EOM (unsafe)** → **Allow**.
+2. Google asks for permission → **Review permissions** → pick the account that will run it (it needs access to the EOM Reports folder, the Ops Hub sheet and the September hand-built workbook) → **Advanced** → **Go to DairyPill EOM (unsafe)** → **Allow**.
    ("Unsafe" just means Google hasn't reviewed a script you wrote yourself — normal for personal scripts.)
 
 ---
@@ -41,7 +49,7 @@ No coding needed. You copy one file into Google Apps Script once; after that you
    | Manual Orders (CSV or Google Sheet) | Columns `CUSTOMER, ORDER, SKU, QUANTITY, DATE` (header row required even if there are no orders) |
    | ADS work orders (`ProductionLabor…xls`) | ADS Production Detail Worksheet Report for the month |
 
-   **Don't** add the start-of-month ADS snapshot or Amazon starting balance — the script copies them from last month.
+   **Don't** add a start-of-month ADS snapshot (copied from last month) or a second Amazon ledger (the Amazon starting balance is the 1st-of-month rows of this month's ledger).
    Excel (`.xlsx`) files are not accepted; save as CSV or Google Sheet.
 
 3. In the script editor choose **buildEOM** → **Run**. It takes a few minutes. When it finishes, the **Execution log** at the bottom shows a link to the workbook.
@@ -51,13 +59,13 @@ No coding needed. You copy one file into Google Apps Script once; after that you
    - **ADS Receipts** — `PO Number`, `SKU`, `Qty` received at ADS this month.
    - **COGS** — add any SKU the Checks tab says has no cost.
 6. Run **buildEOM** again. Everything you typed in yellow tabs is kept; the summaries update.
-7. For accounting: **File → Download → Microsoft Excel (.xlsx)**.
+7. For accounting: **delete the Checks tab** (it's QC only; nothing points at it, and the next run rebuilds it), then **File → Download → Microsoft Excel (.xlsx)**.
 
 ### Shopify only
 To make just the **DairyPill Sell Thru** file (replaces the old "DairyPill Monthly Sell Thru" script): choose **shopifyOnly** → **Run**. It uses the Shopify CSV in the month folder.
 
 ### Building a month other than last month
-Set `MONTH_OVERRIDE: 'September 2026'` near the top of the script, run, then set it back to `''`.
+Set `MONTH_OVERRIDE: 'September 2026'` near the top of the script in the Apps Script editor, run, then set it back to `''`. (The next upload from GitHub resets it to `''` anyway.)
 
 ---
 
@@ -68,7 +76,7 @@ The script normally takes starting balances from last month's folder. For the fi
 1. Inside that month's folder, create a subfolder named **Starting Balances**.
 2. Put in it:
    - last month's month-end **ADS stock snapshot** (CSV), and
-   - an **Amazon Inventory Ledger** (CSV) that **ends on last month's final day** (e.g. for September: a ledger for August, or just 8/31).
+   - *optional:* an **Amazon Inventory Ledger** (CSV) that **ends on last month's final day**. It is only used to check that Amazon's starting balance ties to last month's ending (a FLAG on Checks if not).
 3. COGS and Prepaid are copied automatically from the hand-built September workbook.
 4. On the **MFG Starting Balance** tab, type last month's VitaQuest/VitaPros EOM quantities, then run again.
 
@@ -85,5 +93,5 @@ From the second month on, none of this is needed.
 ## E. Changing a rule
 
 1. Open Claude Code in this repository and say what you want, naming the rule from [RULES.md](RULES.md) — e.g. *"Change rule 5.4 so 'wholesale' tags go to a Wholesale channel."*
-2. Claude Code updates the rules, the code and the tests, runs the tests, and regenerates `dist/DairyPill_EOM.gs`.
-3. Copy the new `dist/DairyPill_EOM.gs` into Apps Script again (select all in `Code.gs`, paste, then put your folder ID back in), save, and run.
+2. Claude Code updates the rules, the code and the tests, runs the tests, regenerates `dist/`, commits and pushes.
+3. GitHub uploads it to Apps Script automatically (about a minute; **Actions** tab shows a green check). Nothing to paste — just run.

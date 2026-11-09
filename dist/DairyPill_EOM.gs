@@ -1,5 +1,5 @@
 // DairyPill EOM Report — generated from src/ by `npm run bundle`. Do not edit here; edit src/ and re-bundle.
-// Paste this whole file into Apps Script (see SETUP.md). Settings are at the top.
+// Uploaded to Apps Script automatically on every push (see SETUP.md). Settings are at the top.
 
 // ===== Config.gs =====
 // =============================================================================
@@ -11,8 +11,10 @@
 var CONFIG = {
 
   // ---- Rule 1.1 / 1.2: folders and which month to build ----------------------
-  // The Google Drive folder that holds one subfolder per month ("September 2026").
-  PARENT_FOLDER_ID: 'PASTE_THE_PARENT_FOLDER_ID_HERE',
+  // The Google Drive folder that holds one subfolder per month ("October 2026"):
+  // DairyPill › EOM Reports. Kept here (not typed in Apps Script) because every
+  // deploy replaces the whole script.
+  PARENT_FOLDER_ID: '16H9CCvtmchb2N7dzhcoY9-43PviS-sxn',
   // Leave blank to build LAST calendar month. To force a month, type it exactly
   // like the folder name, e.g. 'September 2026'.
   MONTH_OVERRIDE: '',
@@ -386,9 +388,14 @@ function monthFileEntry_(folder, base, nameOnly) {
 
 function parentFolder_() {
   if (!CONFIG.PARENT_FOLDER_ID || /PASTE/.test(CONFIG.PARENT_FOLDER_ID)) {
-    throw new Error('Set PARENT_FOLDER_ID at the top of Config.gs to the ID of the "DairyPill EOM" folder (the part of its link after /folders/).');
+    throw new Error('Set PARENT_FOLDER_ID at the top of Config.gs to the ID of the "EOM Reports" folder (the part of its link after /folders/).');
   }
-  return DriveApp.getFolderById(CONFIG.PARENT_FOLDER_ID);
+  try {
+    return DriveApp.getFolderById(CONFIG.PARENT_FOLDER_ID);
+  } catch (err) {
+    throw new Error('Could not open the EOM Reports folder (ID ' + CONFIG.PARENT_FOLDER_ID + ') as ' + Session.getActiveUser().getEmail() +
+      '. Share that folder with this Google account (Editor), or run the script from an account that has access. (' + err.message + ')');
+  }
 }
 
 function subfolder_(parent, name, required) {
