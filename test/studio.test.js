@@ -140,3 +140,19 @@ test('another build starting at the same moment is turned away (retryable)', () 
   assert.match(err.errorLog.textFormatElements[0].text, /Another DairyPill build is starting/);
   assert.equal(err.retryability, 'RETRYABLE');
 });
+
+test('Studio quick check catches a Manual Orders row with no date, or a Shopify export without status columns, before queuing', () => {
+  const { ctx, studio, sep } = setup();
+  const raw = sampleRaw(2026, 8);
+  const manualFile = sep.getFilesByName('manual orders.csv').next();
+  manualFile.content = csv(raw.manual.concat([['MANUAL', '150', '50001', '1', '']]));
+  let err = error(ctx.onStudioRunEOM(run('September 2026')));
+  assert.match(err.errorLog.textFormatElements[0].text, /Manual Orders row 6 \(SKU 50001\) has no DATE/);
+  assert.equal(studio.triggers.length, 0, 'nothing queued');
+  manualFile.content = csv(raw.manual);
+  const shopFile = sep.getFilesByName('orders_export.csv').next();
+  shopFile.content = csv(raw.shopify.map((r) => r.slice(0, 9))); // drop Cancelled at + Lineitem fulfillment status
+  err = error(ctx.onStudioRunEOM(run('September 2026')));
+  assert.match(err.errorLog.textFormatElements[0].text, /missing the column "Cancelled at"/);
+  assert.equal(studio.triggers.length, 0, 'nothing queued');
+});

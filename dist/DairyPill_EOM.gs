@@ -263,8 +263,14 @@ function preflight_(kind, monthText) {
     requireOneOfEach_(scan, ['SHOPIFY'], m.label);
   } else {
     requireOneOfEach_(scan, ['ADS', 'LEDGER', 'BIZ', 'SHOPIFY', 'MANUAL', 'WORK_ORDERS'], m.label);
+    checkLedgerCoversMonth_(tableFromEntry_(scan.byType.LEDGER[0], 'Amazon Inventory Ledger'), m);     // Rule 5.2
+    manualRowsInMonth_(tableFromEntry_(scan.byType.MANUAL[0], 'Manual Orders file'), m);               // Rule 5.6
     findStartingBalances_(parent, monthFolder, m);
   }
+  // Rule 5.4 / 5.4a: order lines together, and the status columns needed to skip cancelled/refunded lines.
+  var shop = tableFromEntry_(scan.byType.SHOPIFY[0], 'Shopify order export');
+  checkShopifyOrdersContiguous_(shop);
+  shopifyLinesCounted_(shop);
   return { label: m.label };
 }
 
