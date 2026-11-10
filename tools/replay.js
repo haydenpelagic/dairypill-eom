@@ -2,7 +2,7 @@
 // compares with the hand-built report. Usage:  node tools/replay.js <folder>
 // The folder holds CSV exports (not committed — they contain business data):
 //   ads_start.csv  ads_end.csv  amazon_start.csv  amazon_ledger_full.csv  amazon_sales.csv
-//   shopify.csv  manual_orders.csv  workorders.xls  bom.csv  cogs.csv  ads_receipts.csv
+//   shopify.csv  manualorder_log.csv  amz_log.csv (Ops Hub tabs, A:F)  workorders.xls  bom.csv  cogs.csv  ads_receipts.csv
 //   mfg_inventory.csv (MFG,SKU,Received Qty,EOM Qty)   optional: old_variance.csv old_outbound.csv
 'use strict';
 const fs = require('fs');
@@ -36,7 +36,8 @@ const inputs = {
     : { rows: null, source: 'no amazon_start.csv', problem: null },
   biz: table('amazon_sales.csv'),
   shopify: table('shopify.csv'),
-  manual: table('manual_orders.csv'),
+  manualLog: L.parseOpsLog_(L.parseCsv_(read('manualorder_log.csv')), 'manual', m),
+  amzLog: L.parseOpsLog_(L.parseCsv_(read('amz_log.csv')), 'amz', m),
   workOrders: L.parseWorkOrdersHtml_(read('workorders.xls'), m),
   bomValues: L.parseCsv_(read('bom.csv')),
   cogs,

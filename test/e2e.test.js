@@ -25,7 +25,6 @@ function putMonthFiles(folder, raw, opts) {
   folder.createFile('177349020748.csv', csv(raw.ledger));
   folder.createFile('BusinessReport-10-22-26.csv', '﻿' + csv(raw.biz));
   folder.createFile('orders_export.csv', csv(raw.shopify));
-  folder.createFile('manual orders.csv', csv(raw.manual));
   folder.createFile('ProductionLabor.DY.2026-10-01.xls', raw.woHtml, 'application/vnd.ms-excel');
   folder.createFile('notes.pdf', '%PDF', 'application/pdf');
   if (opts && opts.boot) {
@@ -59,9 +58,14 @@ const parent = gas.root.createFolder('DairyPill EOM');
 const sep = parent.createFolder('September 2026');
 const rawSep = sampleRaw(2026, 8);
 putMonthFiles(sep, rawSep, { boot: true });
+// Ops Hub: BOM + the two shipment logs. The logs hold several months' rows (Rule 5.6: month = Ship Date).
+const logMonths = [[2026, 8], [2026, 9], [2027, 2], [2027, 3]].map(([y, mi]) => sampleRaw(y, mi));
+const stackLog = (k) => [rawSep[k][0]].concat(...logMonths.map((r) => r[k].slice(1)));
 gas.spreadsheetWithId(ctx.CONFIG.BOM_SOURCE.spreadsheetId, 'DairyPill Ops Hub 2.0', null, {
   Other: [['x']],
-  bom: rawSep.bomValues.map((r) => ['', '', '', ''].concat(r)) // the real tab is lower-case "bom"; data in E:I
+  bom: rawSep.bomValues.map((r) => ['', '', '', ''].concat(r)), // the real tab is lower-case "bom"; data in E:I
+  manualorder_log: stackLog('manualLog'),
+  amz_log: stackLog('amzLog').map((r) => r.concat(['October'])) // extra columns past F are ignored
 });
 const cogsWithFormulas = [rawSep.cogsHeader].concat(rawSep.cogsRows.map((r, i) => ['=TRIM(B' + (i + 2) + ')'].concat(r.slice(1))));
 const bootWb = gas.spreadsheetWithId(ctx.CONFIG.BOOTSTRAP_WORKBOOK_ID, 'Sept hand-built', null, {
@@ -96,7 +100,7 @@ test('1. first run for September builds the full workbook', () => {
   assert.deepEqual(names(sep), [
     'ADS Ending Balance 09.30.2026.csv', 'ADS Starting Balance 08.31.2026.csv', 'AMZ Business Report 09.30.2026.csv',
     'AMZ Inventory Ledger 09.30.2026.csv', 'DAIRYPILL_EOM COGS - September 2026', 'DairyPill Sell Thru Sep 2026',
-    'Manual Orders 09.30.2026.csv', 'Shopify Orders 09.30.2026.csv', 'Work Orders 09.30.2026.xls', 'notes.pdf']);
+    'Shopify Orders 09.30.2026.csv', 'Work Orders 09.30.2026.xls', 'notes.pdf']);
 
   // SKUs stayed text (the mock turns number-looking text into numbers unless the cell is text-formatted)
   const shop = ss.getSheetByName(tabs.shopify).rawValues();
@@ -145,7 +149,7 @@ test('2. typing MFG Inventory + ADS Receipts and running again keeps what you ty
   const vq = rowOf(ss2, tabs.variance, 'VitaQuest', '70003');
   assert.deepEqual(COLS.map((c) => wb.value(tabs.variance, vq, c)), [100, 50, 30, 120, 120, 0]);
   const ads = rowOf(ss2, tabs.variance, 'ADS', '50001');
-  assert.deepEqual(COLS.map((c) => wb.value(tabs.variance, ads, c)), [50, 10, 2, 58, 48, -10]);
+  assert.deepEqual(COLS.map((c) => wb.value(tabs.variance, ads, c)), [50, 10, 3, 57, 48, -9]);
   const a8 = rowOf(ss2, tabs.variance, 'Amazon', 'A80004');
   assert.equal(wb.value(tabs.variance, a8, 11), 1.03, 'your COGS edit is used');
   const checks = ss2.getSheetByName(tabs.checks).rawValues();
@@ -273,14 +277,14 @@ test('a Sell Thru file from an older script version is rebuilt, not reused', () 
   assert.equal(c.sellThruIsCurrent_(cur.file), true);
 });
 
-test('an undated Manual Orders row or a Shopify export without status columns stops the run before anything in Drive changes', () => {
+test('a leftover Manual Orders file, or a Shopify export without status columns, stops the run before anything in Drive changes', () => {
   const mar = parent.createFolder('March 2027');
   const raw = sampleRaw(2027, 2);
-  raw.manual = raw.manual.concat([['MANUAL', '150', '50001', '1', '']]);
   putMonthFiles(mar, raw, { boot: true });
+  mar.createFile('manual orders.csv', csv([['CUSTOMER', 'ORDER', 'SKU', 'QUANTITY', 'DATE'], ['MANUAL', '150', '50001', '1', '3/2/2027']]));
   ctx.CONFIG.MONTH_OVERRIDE = 'March 2027';
   const before = names(mar);
-  assert.throws(() => ctx.buildEOM(), /Manual Orders row 6 \(SKU 50001\) has no DATE/);
+  assert.throws(() => ctx.buildEOM(), /"manual orders.csv" in "March 2027" is a Manual Orders file\. Those are no longer used: shipments out of ADS are read from Ops Hub "manualorder_log" and "amz_log"/);
   assert.deepEqual(names(mar), before, 'nothing renamed, copied or created');
 
   const apr = parent.createFolder('April 2027');

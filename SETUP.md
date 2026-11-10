@@ -46,8 +46,11 @@ Good to know:
    | Amazon Inventory Ledger (CSV) | Seller Central → Inventory Ledger → **Summary view**, **daily**, dates **1st through last day** of the month |
    | Amazon Business Report (CSV) | Detail Page Sales and Traffic by Child Item, **1st through last day** |
    | Shopify orders export (CSV) | Shopify → Orders → Export, the month's date range |
-   | Manual Orders (CSV or Google Sheet) | Columns `CUSTOMER, ORDER, SKU, QUANTITY, DATE` (header row required even if there are no orders) |
    | ADS work orders (`ProductionLabor…xls`) | ADS Production Detail Worksheet Report for the month |
+
+   **No Manual Orders file any more** (a leftover one stops the run). Instead, before running, make sure Ops Hub 2.0 is up to date (RULES 5.6):
+   - **`manualorder_log`** — every non-Shopify shipment out of ADS (samples, marketing, replacements…), with its **Channel** (DTC, Marketing, CX, TikTok or Samples) and **Ship Date**.
+   - **`amz_log`** — every shipment out of ADS to Amazon, with its **Ship Date** (the day it left ADS; leave blank if it hasn't shipped yet).
 
    **Don't** add a start-of-month ADS snapshot (copied from last month) or a second Amazon ledger (the Amazon starting balance is the 1st-of-month rows of this month's ledger).
    Excel (`.xlsx`) files are not accepted; save as CSV or Google Sheet.

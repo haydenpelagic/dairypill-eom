@@ -54,9 +54,9 @@ test('Rule 9.3 ADS: begin / receiving / sold (bundles split, CX included, kits) 
     '80030': [100, 0, 17, 83, 90, 7],      // 1 CX + 1 TikTok bundle + 5 starter kits + 10 Amazon kits
     '80090': [200, 0, 5, 195, 170, -25],   // "80090,80090" x2 lines = 4, plus 1 single
     '51002': [30, 0, 2, 28, 28, 0],        // CX line of a replacement order + TikTok bundle
-    '50001': [50, 10, 2, 58, 48, -10],     // PO receipt; MANUAL order
+    '50001': [50, 10, 3, 57, 48, -9],      // PO receipt; manualorder_log Marketing 2 + Samples 1
     '20001': [40, 0, 5, 35, 35, 0],        // used by 5 starter kits
-    'A0030': [20, 10, 15, 15, 15, 0]       // kitted 4 + 6; 15 sent to Amazon
+    'A0030': [20, 10, 15, 15, 15, 0]       // kitted 4 + 6; 15 shipped out of ADS to Amazon (amz_log)
   };
   for (const [sku, e] of Object.entries(expect)) {
     const r = findRow(T.variance, 'ADS', sku);
@@ -91,7 +91,7 @@ test('Rule 9.3 costs and missing COGS', () => {
 test('Rule 9.1: subtotals add up their own block only', () => {
   const r = findRow(T.variance, 'Subtotal – ADS');
   assert.equal(val(T.variance, r, 'E'), 10 + 100 + 200 + 30 + 50 + 40 + 20);
-  assert.equal(val(T.variance, r, 'J'), -7 + 7 - 25 + 0 - 10 + 0 + 0);
+  assert.equal(val(T.variance, r, 'J'), -7 + 7 - 25 + 0 - 9 + 0 + 0);
 });
 
 test('Rule 10: valuation totals box', () => {
@@ -105,18 +105,20 @@ test('Rule 10: valuation totals box', () => {
   assert.equal(val(T.valuation, a8, 'J'), 'NO COST');
 });
 
-test('Rule 11: outbound units by channel (order-level tags, manual marketing, Amazon)', () => {
+test('Rule 11: outbound units by channel (order-level tags, manualorder_log channels incl. Samples, Amazon)', () => {
   const row = (sku) => findRow(T.outbound, sku);
-  const units = (sku) => ['C', 'E', 'G', 'I', 'K', 'M'].map((c) => val(T.outbound, row(sku), c)); // DTC, Mktg, CX, TikTok, Amazon, All
-  assert.deepEqual(units('10030'), [3, 0, 0, 0, 0, 3]);
-  assert.deepEqual(units('80090,80090'), [2, 0, 0, 0, 0, 2]);
-  assert.deepEqual(units('51002'), [0, 0, 1, 0, 0, 1]);           // 2nd line of a Replacement order → CX
-  assert.deepEqual(units('80030,51002'), [0, 0, 0, 1, 0, 1]);
-  assert.deepEqual(units('80090'), [0, 1, 0, 0, 0, 1]);           // "Free sample, TikTok" → Marketing (first match)
-  assert.deepEqual(units('50001'), [0, 2, 0, 0, 1, 3]);           // MANUAL order + Amazon
-  assert.deepEqual(units('A0030'), [0, 0, 0, 0, 20, 20]);
+  const U = ['C', 'E', 'G', 'I', 'K', 'M', 'O']; // DTC, Mktg, CX, TikTok, Samples, Amazon, All
+  assert.deepEqual(plain(sheet(T.outbound).values[2].filter((x) => x)), ['DTC', 'Marketing', 'CX', 'TikTok', 'Samples', 'Amazon', 'All Channels']);
+  const units = (sku) => U.map((c) => val(T.outbound, row(sku), c));
+  assert.deepEqual(units('10030'), [3, 0, 0, 0, 0, 0, 3]);
+  assert.deepEqual(units('80090,80090'), [2, 0, 0, 0, 0, 0, 2]);
+  assert.deepEqual(units('51002'), [0, 0, 1, 0, 0, 0, 1]);           // 2nd line of a Replacement order → CX
+  assert.deepEqual(units('80030,51002'), [0, 0, 0, 1, 0, 0, 1]);
+  assert.deepEqual(units('80090'), [0, 1, 0, 0, 0, 0, 1]);           // "Free sample, TikTok" → Marketing (first match)
+  assert.deepEqual(units('50001'), [0, 2, 0, 0, 1, 1, 4]);           // manualorder_log Marketing 2 + Samples 1; Amazon ledger 1
+  assert.deepEqual(units('A0030'), [0, 0, 0, 0, 0, 20, 20]);         // the 15 in amz_log are not sales
   const total = findRow(T.outbound, 'TOTAL');
-  assert.deepEqual(['C', 'E', 'G', 'I', 'K', 'M'].map((c) => val(T.outbound, total, c)), [5, 3, 2, 1, 25, 36]);
+  assert.deepEqual(U.map((c) => val(T.outbound, total, c)), [5, 3, 2, 1, 1, 25, 37]);
   close(val(T.outbound, row('80090,80090'), 'D'), 2 * 13.80);
 });
 
@@ -240,17 +242,38 @@ test('Rule 5.4a: cancelled, and refunded/voided-and-never-shipped Shopify lines 
   assert.deepEqual([2, 3, 4, 5].map((row) => w.value('S', row, 13)), [1, 2, 0, 4]);
 });
 
-test('Rule 5.6: only Manual Orders rows shipped inside the month count', () => {
-  const v = sheet(T.manual).values;
-  const inMonth = v.slice(1).map((r, i) => [r[1], wb.value(T.manual, i + 2, v[0].indexOf('In Month') + 1)]);
-  assert.deepEqual(plain(inMonth), [['141', 'Yes'], ['142', 'Yes'], ['140', 'No'], ['143', 'No']]);
-  assert.equal(val(T.variance, findRow(T.variance, 'ADS', '50001'), 'G'), 2, 'the 99 units shipped last month are not counted');
+test('Rule 5.6: Ops Hub logs — only rows shipped inside the month count; blank Ship Date = not shipped', () => {
+  assert.deepEqual(plain(sheet(T.manualLog).values), [
+    ['ADS Order Number', 'Channel', 'SKU', 'Quantity', 'Order Date', 'Ship Date'],
+    ['141', 'Marketing', '50001', 2, '', L.parseMDY_('9/2/2026')],
+    ['144', 'Samples', '50001', 1, '2026-10-01T10:00:00+00:00', L.parseMDY_('9/5/2026')]]);
+  assert.deepEqual(plain(sheet(T.amzLog).values), [
+    ['ADS Order Number', 'Amazon Number', 'SKU', 'Quantity', 'Order Date', 'Ship Date'],
+    ['142', 'FBA15X', 'A0030', 15, '', L.parseMDY_('9/17/2026')]]);
+  assert.equal(val(T.variance, findRow(T.variance, 'ADS', '50001'), 'G'), 3, 'other-month and unshipped rows are not counted');
+  // amz_log only reduces ADS: Amazon's side still comes from the ledger (Receipts 15 = what arrived).
+  assert.equal(val(T.variance, findRow(T.variance, 'Amazon', 'A0030'), 'F'), 15);
   const ch = sheet(T.checks).values;
-  assert.equal(wb.value(T.checks, ch.findIndex((x) => x[0] === '5.6') + 1, 3), 'INFO: 2 rows not counted');
-  const raw = sampleInputs(L).manual;
-  const noDate = { header: raw.header, rows: [['MANUAL', '1', '50001', '1', '']] };
-  assert.throws(() => L.buildWorkbookModel_(sampleInputs(L, { manual: noDate })), /Manual Orders row 2 \(SKU 50001\) has no DATE/);
+  const r = ch.findIndex((x) => x[0] === '5.6');
+  assert.match(String(ch[r][2]), /^CHECK: rows with no Ship Date are not counted/);
+  assert.equal(ch[r][3], 'manualorder_log: 2 rows shipped 09/01/2026–09/30/2026; 1 rows with no Ship Date (not shipped — not counted); 1 rows from other months (ignored). ' +
+    'amz_log: 1 rows shipped 09/01/2026–09/30/2026; 1 rows from other months (ignored).');
   assert.equal(L.parseMDY_('2026-09-05'), L.parseMDY_('09/05/2026'));
+});
+
+test('Rule 5.6: Ops Hub log rows that would make a number wrong stop the run', () => {
+  const m = L.monthInfo_(2026, 8);
+  const H = ['ADS Order Number', 'Channel', 'SKU', 'Quantity', 'Order Date', 'Ship Date'];
+  const A = ['ADS Order Number', 'Amazon Number', 'SKU', 'Quantity', 'Order Date', 'Ship Date'];
+  const one = (row, head) => () => L.parseOpsLog_([head || H, row], head === A ? 'amz' : 'manual', m);
+  assert.throws(one(['1', 'Amazon', 'A0030', 5, '', '9/3/2026']), /units sent from ADS to Amazon belong in Ops Hub "amz_log"/);
+  assert.throws(one(['1', 'Wholesale', '50001', 5, '', '9/3/2026']), /Channel "Wholesale" .* is not one of: DTC, Marketing, CX, TikTok, Samples/);
+  assert.throws(one(['', '112-7128727', 'A0180', 1, '', 'Shipped'], A), /Expected a date like 09\/30\/2026 in Ops Hub tab "amz_log", row 2 \(Ship Date\) but found "Shipped".*date the units left ADS/);
+  assert.throws(one(['1', 'CX', '', 5, '', '9/3/2026']), /No SKU in Ops Hub tab "manualorder_log", row 2/);
+  assert.throws(one(['1', 'CX', '50001', 'five', '', '9/3/2026']), /Expected a number in Ops Hub tab "manualorder_log", row 2 \(Quantity\)/);
+  assert.throws(one(['1', 'CX', 8003051003, 1, '', '9/3/2026']), /turned into a number/);
+  assert.throws(() => L.parseOpsLog_([['ADS Order Number', 'SKU']], 'manual', m), /missing the column "Channel"/);
+  assert.equal(L.parseOpsLog_([H, ['1', 'cx', '50001', 1, '', L.parseMDY_('9/30/2026')], ['', '', '', '', '', '']], 'manual', m).rows[0][1], 'CX');
 });
 
 test('Rule 9.3 / 12.13: Amazon Sold = shipped; Delta is split into ledger events; ordered vs shipped', () => {

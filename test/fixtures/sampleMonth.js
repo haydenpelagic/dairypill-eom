@@ -76,12 +76,17 @@ function sampleRaw(year, monthIndex) {
     ['#6', 'f@x', 'paid', '5', '90 refill', '10', '80090', '', 'web', '2026-01-01 10:00:00 -0500', 'unfulfilled'],
     ['#7', 'g@x', 'refunded', '2', '90 refill', '10', '80090', '', 'web', '', 'unfulfilled'],
     ['#7', '', '', '4', 'Tin', '0', '51002', '', '', '', '']];
-  const manual = [['CUSTOMER', 'ORDER', 'SKU', 'QUANTITY', 'DATE'],
-    ['MANUAL', '141', '50001', '2', (monthIndex + 1) + '/2/' + year],
-    ['AMAZON', '142', 'A0030', '15', (monthIndex + 1) + '/17/' + year],
-    // Rule 5.6: shipped outside the month → not counted
-    ['MANUAL', '140', '50001', '99', (pm + 1) + '/' + pLast + '/' + py],
-    ['AMAZON', '143', 'A0030', '50', monthIndex === 11 ? '01/01/' + (year + 1) : (monthIndex + 2) + '/1/' + year]];
+  // Rule 5.6: Ops Hub shipment logs (header + rows). Month = Ship Date; other-month rows are dated 2020 so
+  // logs for several months can be stacked into one Ops Hub without overlapping.
+  const day = (d) => (monthIndex + 1) + '/' + d + '/' + year;
+  const manualLog = [['ADS Order Number', 'Channel', 'SKU', 'Quantity', 'Order Date', 'Ship Date'],
+    ['141', 'Marketing', '50001', '2', '', day(2)],
+    ['144', 'samples', '50001', '1', '2026-10-01T10:00:00+00:00', day(5)],   // channel matched without caring about capitals
+    ['140', 'Marketing', '50001', '99', '', '1/15/2020'],                     // shipped in another month: ignored
+    ['145', 'CX', '50001', '7', '', '']];                                     // no Ship Date = not shipped: not counted
+  const amzLog = [['ADS Order Number', 'Amazon Number', 'SKU', 'Quantity', 'Order Date', 'Ship Date'],
+    ['142', 'FBA15X', 'A0030', '15', '', day(17)],
+    ['143', 'FBA16Y', 'A0030', '50', '', '2/1/2020']];                        // another month: ignored
   const bomValues = [
     ['BOM', '', '', '', ''],
     ['Parent SKU', 'Parent Desc', 'Child SKU', 'Child Desc', 'Qty'],
@@ -105,7 +110,7 @@ function sampleRaw(year, monthIndex) {
     cogs('80090,80090', 11.56, 0.16, 2.08), cogs('80030,51002', 3.05, 0.01, 0.35)]; // A80004 deliberately missing
   const yyyymm = year + '-' + String(monthIndex + 1).padStart(2, '0');
   const woHtml = fs.readFileSync(path.join(__dirname, 'workorders_sample.html'), 'utf8').replace(/2026-09/g, yyyymm);
-  return { adsStart, adsEnd, amzStart, ledger, biz, shopify, manual, bomValues, cogsHeader: COGS_HEADER, cogsRows, woHtml };
+  return { adsStart, adsEnd, amzStart, ledger, biz, shopify, manualLog, amzLog, bomValues, cogsHeader: COGS_HEADER, cogsRows, woHtml };
 }
 
 function sampleInputs(ctx, overrides) {
@@ -122,7 +127,8 @@ function sampleInputs(ctx, overrides) {
     amzPrevEnd: { rows: ctx.ledgerLastDateRows_(t(raw.amzStart, 'start ledger'), m.prevEndSerial, 'start ledger'), source: 'test ledger', problem: null },
     biz: t(raw.biz, 'biz'),
     shopify: t(raw.shopify, 'shopify'),
-    manual: t(raw.manual, 'manual'),
+    manualLog: ctx.parseOpsLog_(raw.manualLog, 'manual', m),
+    amzLog: ctx.parseOpsLog_(raw.amzLog, 'amz', m),
     workOrders: ctx.parseWorkOrdersHtml_(raw.woHtml, m),
     bomValues: raw.bomValues,
     cogs: { header: raw.cogsHeader, rows: raw.cogsRows },

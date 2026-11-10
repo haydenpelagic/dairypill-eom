@@ -32,6 +32,19 @@ var CONFIG = {
     headers: { parent: 'Parent SKU', parentDesc: 'Parent Desc', child: 'Child SKU', childDesc: 'Child Desc', qty: 'Qty' }
   },
 
+  // ---- Rule 5.6: shipments out of ADS, typed in Ops Hub 2.0 before running buildEOM -
+  // Read straight from these tabs (no file in the month folder). A row counts in the month of its
+  // Ship Date; a blank Ship Date = not shipped yet (not counted, listed on Checks).
+  OPS_HUB: {
+    spreadsheetId: '1rCXpffesBqnfocXslxqb9VzuFCQd60X5IV_YPZTkEtE', // DairyPill Ops Hub 2.0
+    // Hand-entered shipments from ADS (samples, marketing, replacements…), each with its sales channel.
+    manualLog: { sheetName: 'manualorder_log', columns: 'A:F',
+      headers: { order: 'ADS Order Number', channel: 'Channel', sku: 'SKU', qty: 'Quantity', orderDate: 'Order Date', shipDate: 'Ship Date' } },
+    // Units shipped out of ADS to Amazon. They only reduce ADS (never a sale; Amazon's side is the ledger).
+    amzLog: { sheetName: 'amz_log', columns: 'A:F',
+      headers: { order: 'ADS Order Number', amazon: 'Amazon Number', sku: 'SKU', qty: 'Quantity', orderDate: 'Order Date', shipDate: 'Ship Date' } }
+  },
+
   // ---- Rule 6.2 / 7.3: first-run source for COGS and Prepaid -----------------
   // Used only when there is no previous month's workbook to carry them from.
   BOOTSTRAP_WORKBOOK_ID: '1vFNFEbUKyoTlj21PrKWjk_2Yfdhionh7wkkSF2J3pAw', // Sept 2026 (hand-built)
@@ -45,6 +58,7 @@ var CONFIG = {
     LEDGER:   { label: 'Amazon Inventory Ledger',  headers: ['Date', 'FNSKU', 'MSKU', 'Disposition', 'Receipts', 'Ending Warehouse Balance'] },
     BIZ:      { label: 'Amazon Business Report',   headers: ['(Child) ASIN', 'Units Ordered'] },
     SHOPIFY:  { label: 'Shopify order export',     headers: ['Name', 'Lineitem quantity', 'Lineitem sku', 'Tags'] },
+    // Rule 2.5: no longer used — recognized only so a leftover file stops the run (it would double count the Ops Hub logs).
     MANUAL:   { label: 'Manual Orders',            headers: ['CUSTOMER', 'ORDER', 'SKU', 'QUANTITY', 'DATE'] },
     WORK_ORDERS: { label: 'ADS work orders', marker: 'Production Detail Worksheet Report' }
   },
@@ -64,8 +78,7 @@ var CONFIG = {
     // Rule 5.4a: Financial Status / Cancelled at are on an order's first line only; Lineitem fulfillment status is per line.
     SHOPIFY: { name: 'Name', sku: 'Lineitem sku', qty: 'Lineitem quantity', tags: 'Tags',
                financial: 'Financial Status', cancelled: 'Cancelled at', fulfillment: 'Lineitem fulfillment status',
-               numeric: ['Lineitem quantity', 'Subtotal', 'Shipping', 'Taxes', 'Total', 'Discount Amount', 'Lineitem price', 'Lineitem compare at price', 'Refunded Amount', 'Outstanding Balance', 'Lineitem discount'] },
-    MANUAL:  { customer: 'CUSTOMER', sku: 'SKU', qty: 'QUANTITY', date: 'DATE' } // Rule 5.6: DATE = ship date
+               numeric: ['Lineitem quantity', 'Subtotal', 'Shipping', 'Taxes', 'Total', 'Discount Amount', 'Lineitem price', 'Lineitem compare at price', 'Refunded Amount', 'Outstanding Balance', 'Lineitem discount'] }
   },
 
   // ---- Rule 5.4: Shopify channel rules (first match wins, not case-sensitive) -
@@ -76,13 +89,12 @@ var CONFIG = {
     { keyword: 'tiktok',      channel: 'TikTok' }
   ],
   DEFAULT_CHANNEL: 'DTC',
-  // Column order on Outbound Summary and Channel Breakdown.
+  // Shopify channels, in Channel Breakdown column order (Rule 13).
   CHANNELS: ['DTC', 'Marketing', 'CX', 'TikTok'],
+  // Rule 5.6 / 11.2: Outbound Summary channels = the Channel values manualorder_log may use.
+  // Samples comes only from manualorder_log (Shopify "free sample" tags stay Marketing).
+  OUTBOUND_CHANNELS: ['DTC', 'Marketing', 'CX', 'TikTok', 'Samples'],
   AMAZON_CHANNEL_LABEL: 'Amazon',
-
-  // ---- Rule 11.2: Manual Orders rows with this CUSTOMER count as Marketing ---
-  MANUAL_MARKETING_CUSTOMER: 'MANUAL',
-  MANUAL_MARKETING_CHANNEL: 'Marketing',
 
   // ---- Rule 6.3: Amazon MSKU → our SKU ----------------------------------------
   AMAZON_SKU_RULES: {

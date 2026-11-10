@@ -27,13 +27,15 @@ Claude Code should then update this file, `src/Config.gs` / `src/Logic.gs`, and 
 | Amazon Inventory Ledger (whole month, daily, Summary view) | Date, FNSKU, MSKU, Disposition, Receipts, Ending Warehouse Balance | yes |
 | Amazon Business Report | (Child) ASIN, Units Ordered | yes |
 | Shopify order export | Name, Lineitem quantity, Lineitem sku, Tags | yes |
-| Manual Orders (CSV or Google Sheet) | CUSTOMER, ORDER, SKU, QUANTITY, DATE | yes (may have no rows) |
 | ADS work orders (`ProductionLabor…xls`) | the page says "Production Detail Worksheet Report" | yes |
+
+Shipments out of ADS that aren't Shopify orders are **not files**: they are read from the Ops Hub 2.0 logs (rule 5.6).
 
 - **2.1** Two files of the same kind in the month folder stops the run.
 - **2.2** **First run only:** last month's ADS snapshot goes in a subfolder named `Starting Balances` inside the month folder. Optionally, an Amazon ledger that ends on last month's final day can go there too — it is only used for the tie-out check (rule 4.2a).
 - **2.3** After a successful build, raw files are renamed to match their tab names (e.g. `ADS Ending Balance 09.30.2026.csv`). Next month uses these names to find its starting balances. The name is matched with or without `.csv`, and a file saved as a Google Sheet under that name also works.
 - **2.4** An Excel (`.xlsx`) file in the month folder stops the run — save it as CSV or Google Sheet instead. Other unrecognized files are ignored and listed on Checks.
+- **2.5** A Manual Orders file (columns CUSTOMER, ORDER, SKU, QUANTITY, DATE) in the month folder **stops the run**. Those shipments now come from the Ops Hub logs (rule 5.6); two sources for the same shipments would double count.
 
 ## 3. Tab names
 
@@ -44,7 +46,7 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
 | Summaries | README, Checks, Variance Overview, Inventory Valuation, Outbound Summary | green |
 | You type here | MFG Inventory 09.30.2026, ADS Receipts 09.30.2026, Prepaid, COGS | yellow |
 | Starting balances | ADS Starting Balance 08.31.2026, AMZ Starting Balance 08.31.2026, MFG Starting Balance 08.31.2026 | gray (MFG yellow on first run) |
-| Raw reports | ADS Ending Balance 09.30.2026, AMZ Inventory Ledger 09.30.2026, AMZ Business Report 09.30.2026, Shopify Orders 09.30.2026, Work Orders 09.30.2026, Manual Orders 09.30.2026 | gray |
+| Raw reports | ADS Ending Balance 09.30.2026, AMZ Inventory Ledger 09.30.2026, AMZ Business Report 09.30.2026, Shopify Orders 09.30.2026, Work Orders 09.30.2026, Manual Order Log 09.30.2026, AMZ Log 09.30.2026 | gray |
 | Reference | BOM, AMZ SKU Map, SKU List | blue |
 | Helpers | Bundle Map, Kit Consumption | purple |
 
@@ -79,7 +81,11 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
 
   `Counted Qty` = quantity if counted, else 0; every "units sold" formula (Bundle Map, Outbound Summary, Channel Breakdown) uses it. The export must include *Financial Status*, *Cancelled at* and *Lineitem fulfillment status* (Shopify's standard order export does), or the run stops.
 - **5.5 Work orders:** one row per kit line (Work Order, Date, SKU from the *Job* column, Pieces). "Setup Fee" lines are dropped; the *Description* text is ignored (it is sometimes wrong). The run stops if the line amounts don't add up to the report's TOTAL, or if the report is for a different month. Quantities only — labor dollars are not used.
-- **5.6 Manual Orders:** as received — the Ops Hub log can include other months. *DATE* is the **ship date**; only rows shipped inside the month count (added column `In Month` = Yes/No). Every row must have a readable DATE (`10/2/2026`, `2026-10-02` or a real date) or the run stops. CUSTOMER = MANUAL means samples/marketing sends; CUSTOMER = AMAZON means ADS → FBA transfers.
+- **5.6 Ops Hub shipment logs** (replace the Manual Orders file). Fill these in Ops Hub 2.0 **before** running `buildEOM`; the script reads them directly.
+  - `manualorder_log` — columns A:F `ADS Order Number | Channel | SKU | Quantity | Order Date | Ship Date`. Hand-entered shipments out of ADS (samples, marketing, replacements…). **Channel** must be DTC, Marketing, CX, TikTok or Samples (capitals don't matter). **Amazon stops the run**: units sent to Amazon belong in `amz_log`.
+  - `amz_log` — columns A:F `ADS Order Number | Amazon Number | SKU | Quantity | Order Date | Ship Date`. **Units shipped out of ADS to Amazon.** They only reduce ADS (rule 9.3). They are not sales, and Amazon's side never uses them: what *arrived* at Amazon is the ledger's *Receipts*.
+  - A row counts in the month of its **Ship Date** (the day the units left ADS). **Blank Ship Date = not shipped yet**: not counted, and Checks shows CHECK with the count. Rows from other months are ignored. Anything else odd stops the run: a Ship Date that isn't a date (e.g. "Shipped"), a Quantity that isn't a number, an unknown Channel, a missing SKU, or a SKU Google Sheets has turned into a number (`80030,51003` → `8003051003`). Format the SKU columns as **Plain text**. Order Date is copied as text and never used. Columns after F are ignored.
+  - The month's rows are frozen into the workbook as `Manual Order Log <date>` and `AMZ Log <date>`, so the workbook stays self-contained.
 
 ## 6. Reference tabs
 
@@ -103,7 +109,7 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
 
 - **9.1** Blocks in this order: **ADS → Amazon → one block per MFG** (alphabetical). Each block = a gray header row, one row per SKU (A→Z), and a `Subtotal – <location>` row that adds the rows **between that block's header and its subtotal**.
 - **9.2 Which SKUs get a row** (nothing is typed):
-  - **ADS:** every SKU in ADS Starting, ADS Ending, ADS Receipts, Work Orders (kits built), Manual Orders, or Bundle Map components. Kit components only reduce SKUs already in this list — e.g. 70001/70003 inside a kit never create ADS rows.
+  - **ADS:** every SKU in ADS Starting, ADS Ending, ADS Receipts, Work Orders (kits built), the two Ops Hub logs, or Bundle Map components. Kit components only reduce SKUs already in this list — e.g. 70001/70003 inside a kit never create ADS rows.
   - **Amazon:** every *mapped* SKU in AMZ Starting, the AMZ ledger, or the Business Report with units > 0.
   - **Each MFG:** every SKU listed for that MFG on MFG Starting or MFG Inventory.
 - **9.3 Columns** (each row in a block has the identical formula pattern, keyed on that row's SKU):
@@ -112,7 +118,7 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
 |---|---|---|---|
 | Beginning | ADS Starting *Qty On Hand* | AMZ Starting *Starting Warehouse Balance* + units between Amazon warehouses (rule 4.2) | MFG Starting *EOM Qty* |
 | Receiving | ADS Receipts *Qty* + Work Orders *Pieces* (kits built) | Ledger *Receipts* (whole month) | MFG Inventory *Received Qty* |
-| Sold / Used | Bundle Map component units (every Shopify channel incl. CX) + Manual Orders *QUANTITY* shipped in the month (MANUAL and AMAZON) + Kit Consumption child units | Ledger *Customer Shipments* (whole month, shown positive) | **Calculated** = Beginning + Receiving − Actual |
+| Sold / Used | Bundle Map component units (every Shopify channel incl. CX) + `manualorder_log` *Quantity* (every channel) + `amz_log` *Quantity* (shipped to Amazon) + Kit Consumption child units | Ledger *Customer Shipments* (whole month, shown positive) | **Calculated** = Beginning + Receiving − Actual |
 | Expected Ending | Beginning + Receiving − Sold/Used | same | same |
 | Actual Ending | ADS Ending *Qty On Hand* | Ledger *Ending Warehouse Balance* **+ In Transit Between Warehouses** on the **last date** in the file | MFG Inventory *EOM Qty* |
 | Delta | Actual − Expected | same | same (always 0) |
@@ -128,8 +134,8 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
 
 ## 11. Outbound Summary
 
-- **11.1** One row per SKU sold: every Shopify SKU (bundles kept whole, e.g. `80090,80090`), every Manual Orders MANUAL SKU shipped in the month, every Amazon SKU with ledger Customer Shipments. Only counted Shopify lines (rule 5.4a). A TOTAL row adds the rows above it.
-- **11.2** Columns: SKU | Avg Cost | then *Units* and *Total Cost* for DTC, Marketing, CX, TikTok, Amazon, All Channels. The channel names in row 3 drive the formulas. Marketing = Shopify Marketing + Manual Orders with CUSTOMER = MANUAL shipped in the month. Amazon = ledger *Customer Shipments*.
+- **11.1** One row per SKU sold: every Shopify SKU (bundles kept whole, e.g. `80090,80090`), every `manualorder_log` SKU shipped in the month, every Amazon SKU with ledger Customer Shipments. Only counted Shopify lines (rule 5.4a). A TOTAL row adds the rows above it.
+- **11.2** Columns: SKU | Avg Cost | then *Units* and *Total Cost* for DTC, Marketing, CX, TikTok, Samples, Amazon, All Channels. The channel names in row 3 drive the formulas. Each channel = Shopify lines with that Channel (rule 5.4) + `manualorder_log` rows with that Channel shipped in the month. Shopify never produces Samples ("free sample" tags stay Marketing). Amazon = ledger *Customer Shipments*; `amz_log` units are not sales.
 
 ## 12. Checks tab
 
@@ -148,7 +154,7 @@ Each line shows **OK**, **FLAG** (needs attention), **CHECK** (confirm by eye) o
 - **12.9** Where the starting balances came from; where the Shopify data came from; files ignored; build time.
 - **12.10** Amazon starting balance ties to last month's ending (rule 4.2a): OK, FLAG with the SKUs that differ, or INFO if last month's ledger wasn't found.
 - **12.11** Shopify lines not counted (rule 5.4a): number of lines and units.
-- **12.12** Manual Orders rows shipped outside the month (rule 5.6): number of rows.
+- **12.12** Ops Hub shipment logs (rule 5.6): rows counted this month per log, rows with no Ship Date (CHECK — not shipped, not counted), rows from other months.
 - **12.13** **Amazon Delta explained.** A table below the checks, one row per Amazon SKU: Delta from Variance Overview, split into the ledger events that caused it — Customer Returns, Vendor Returns (removals), Found, Lost, Damaged, Disposed, Other Events, Unknown Events, and transfers not matched by the in-transit figures — then *Unexplained* (should be 0; any SKU that isn't is a FLAG). Also *Units Ordered* (Business Report) vs *Units Shipped* (ledger) per SKU, with totals as an INFO line.
 
 ## 13. Shopify Sell Thru file (replaces the old "DairyPill Monthly Sell Thru" script)

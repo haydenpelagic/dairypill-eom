@@ -24,9 +24,15 @@ function buildEOMFor_(monthText) {
 
   // Rule 2: recognize every file by its columns.
   var scan = scanFolder_(monthFolder, m);
-  requireOneOfEach_(scan, ['ADS', 'LEDGER', 'BIZ', 'SHOPIFY', 'MANUAL', 'WORK_ORDERS'], m.label);
+  if (scan.byType.MANUAL.length) {
+    // Rule 2.5: shipments out of ADS now come from the Ops Hub logs; a file as well would double count.
+    throw new Error('"' + scan.byType.MANUAL[0].file.getName() + '" in "' + m.label + '" is a Manual Orders file. Those are no longer used: ' +
+      'shipments out of ADS are read from Ops Hub "' + CONFIG.OPS_HUB.manualLog.sheetName + '" and "' + CONFIG.OPS_HUB.amzLog.sheetName +
+      '". Make sure they are there, then remove the file from the folder and run again.');
+  }
+  requireOneOfEach_(scan, ['ADS', 'LEDGER', 'BIZ', 'SHOPIFY', 'WORK_ORDERS'], m.label);
   var e = {};
-  ['ADS', 'LEDGER', 'BIZ', 'SHOPIFY', 'MANUAL', 'WORK_ORDERS'].forEach(function (k) { e[k] = scan.byType[k][0]; });
+  ['ADS', 'LEDGER', 'BIZ', 'SHOPIFY', 'WORK_ORDERS'].forEach(function (k) { e[k] = scan.byType[k][0]; });
 
   // Read and check every raw file BEFORE changing anything in Drive (Rule 1.4).
   var shopifyTable = tableFromEntry_(e.SHOPIFY, 'Shopify order export');
@@ -34,8 +40,6 @@ function buildEOMFor_(monthText) {
   shopifyLinesCounted_(shopifyTable);                      // Rule 5.4a: status columns present
   var ledgerTable = tableFromEntry_(e.LEDGER, 'Amazon Inventory Ledger');
   checkLedgerCoversMonth_(ledgerTable, m);
-  var manualTable = tableFromEntry_(e.MANUAL, 'Manual Orders file');
-  manualRowsInMonth_(manualTable, m);                      // Rule 5.6: every row has a readable DATE
   var inputs = {
     month: m,
     todayStr: Utilities.formatDate(startedAt, Session.getScriptTimeZone(), 'yyyy-MM-dd'),
@@ -44,7 +48,6 @@ function buildEOMFor_(monthText) {
     ledger: ledgerTable,
     biz: tableFromEntry_(e.BIZ, 'Amazon Business Report'),
     shopify: shopifyTable,
-    manual: manualTable,
     workOrders: parseWorkOrdersHtml_(e.WORK_ORDERS.text, m),
     ignoredFiles: scan.ignored
   };
@@ -54,6 +57,11 @@ function buildEOMFor_(monthText) {
   inputs.adsStart = start.ads;
   inputs.amzPrevEnd = start.amzPrevEnd;
   inputs.bomValues = readBomSource_();
+
+  // Rule 5.6: shipments out of ADS from the Ops Hub logs (this month's rows, by Ship Date).
+  var hub = SpreadsheetApp.openById(CONFIG.OPS_HUB.spreadsheetId);
+  inputs.manualLog = parseOpsLog_(readOpsLogValues_(hub, CONFIG.OPS_HUB.manualLog), 'manual', m);
+  inputs.amzLog = parseOpsLog_(readOpsLogValues_(hub, CONFIG.OPS_HUB.amzLog), 'amz', m);
 
   // Rule 13.2: Shopify goes through the standalone Sell Thru file.
   renameEntry_(e.SHOPIFY, tabs.shopify);
@@ -110,7 +118,6 @@ function buildEOMFor_(monthText) {
   renameEntry_(e.LEDGER, tabs.ledger);
   renameEntry_(e.BIZ, tabs.biz);
   renameEntry_(e.WORK_ORDERS, tabs.workOrders);
-  renameEntry_(e.MANUAL, tabs.manual);
 
   log_('Done in ' + Math.round((new Date() - startedAt) / 1000) + 's: ' + ss.getUrl());
   log_('Open the Checks tab first — anything marked FLAG needs attention.');
@@ -377,6 +384,13 @@ function renameEntry_(entry, base) {
   var ext = /\.[A-Za-z0-9]+$/.exec(name);
   var target = base + (ext && entry.file.getMimeType() !== MimeType.GOOGLE_SHEETS ? ext[0] : '');
   if (name !== target) entry.file.setName(target);
+}
+
+/** Rule 5.6: an Ops Hub shipment log's columns (header in row 1). */
+function readOpsLogValues_(hub, cfg) {
+  var sheet = sheetByName_(hub, cfg.sheetName);
+  if (!sheet) throw new Error('Ops Hub has no tab named "' + cfg.sheetName + '".');
+  return sheet.getRange(cfg.columns).getValues();
 }
 
 function readBomSource_() {
