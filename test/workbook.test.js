@@ -44,7 +44,7 @@ test('Rule 14.1: no Excel-breaking functions anywhere', () => {
 
 test('Rule 9.2: ADS block rows come from the sources, not from a typed list', () => {
   const ads = plain(built.blocks.find((b) => b.kind === 'ADS').skus);
-  assert.deepEqual(ads, ['10030', '20001', '50001', '51002', '80030', '80090', 'A0030']);
+  assert.deepEqual(ads, ['10030', '20001', '41001', '50001', '51002', '80030', '80090', 'A0030']);
   assert.ok(!ads.includes('70001'), 'kit components that are not at ADS must not create rows');
   assert.deepEqual(plain(built.blocks.find((b) => b.kind === 'AMZ').skus), ['50001', 'A0030', 'A80004']);
   const mfg = built.blocks.filter((b) => b.kind === 'MFG');
@@ -130,7 +130,7 @@ test('Rule 9.1: one flat table (no block headings or subtotal rows) and a Total 
 });
 
 test('Rule 10: valuation totals box', () => {
-  const ending = 5 * 7.19 + 90 * 2.96 + 170 * 6.90 + 28 * 0.45 + 48 * 2.10 + 35 * 0.64 + 15 * 2.87 + 115 * 2.87 + 4 * 2.10;
+  const ending = 5 * 7.19 + 90 * 2.96 + 170 * 6.90 + 28 * 0.45 + 48 * 2.10 + 35 * 0.64 + 15 * 2.87 + 115 * 2.87 + 4 * 2.10 + 16 * 0.32;
   const raw = 300 * 197.96 + 120 * 197.96;
   const vals = sheet(T.valuation).values;
   assert.ok(!vals.some((r) => /^(Subtotal|▼)/.test(String(r[0]))), 'no block headings or subtotal rows');
@@ -375,4 +375,15 @@ test('Rule 5.5a: kit lines with a blank or wordy Job — counted when certain, o
   // The normal sample month has nothing to fix.
   const ok = sheet(T.checks).values;
   assert.equal(ok.find((r) => r[1] === 'Work-order lines with no usable SKU (kits NOT counted)')[2], 'OK');
+});
+
+test('Rule 8.1a: one 41001 mailer per unit sold of 80030 / 80090 / 80090,80090 / 80090,80090,80090 (counted Shopify lines)', () => {
+  const bm = sheet(T.bundleMap).values;
+  const mailerRows = bm.filter((r) => r[1] === '41001').map((r) => [r[0], r[2], r[5]]);
+  assert.deepEqual(plain(mailerRows), [['80030', 1, 'Mailer rule (Rule 8.1a)'], ['80090', 1, 'Mailer rule (Rule 8.1a)'],
+    ['80090,80090', 1, 'Mailer rule (Rule 8.1a)']]);
+  assert.ok(!bm.some((r) => r[1] === '41001' && /,51002|10030/.test(r[0])), 'other SKUs use no mailer');
+  // Counted units: 80090,80090 ×2, 80030 ×1, 80090 ×1 (the cancelled and refunded-unshipped 80090 lines don't count) = 4 mailers
+  const r = findRow(T.variance, 'ADS', '41001');
+  assert.deepEqual(['E', 'F', 'G', 'H', 'I', 'J'].map((c) => val(T.variance, r, c)), [20, 0, 4, 16, 16, 0]);
 });

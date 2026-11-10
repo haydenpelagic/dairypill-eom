@@ -155,7 +155,7 @@ test('2. typing MFG Counts + ADS Receipts: summaries update without a rerun; run
   assert.deepEqual(COLS.map((c) => live.value(tabs.variance, vpLive, c)), [0, 300, 0, 300, 300, 0]);
   assert.equal(live.value(tabs.valuation, rowOf(ss, tabs.valuation, 'VitaPros', '70003'), 5), 300);
   ss.getSheetByName(tabs.adsReceipts).getRange(2, 1, 1, 3).setValues([['PO-1', '50001', 10]]);
-  ss.getSheetByName('COGS').getRange(12, 1, 1, 8).setValues([['=TRIM(B12)', 'A80004', '', '', 1, 0.03, 0, 1.03]]); // you add a missing cost
+  ss.getSheetByName('COGS').getRange(13, 1, 1, 8).setValues([['=TRIM(B13)', 'A80004', '', '', 1, 0.03, 0, 1.03]]); // you add a missing cost
 
   ctx.buildEOM();
   const ss2 = findFile(sep, 'DAIRYPILL_EOM COGS - September 2026').ss;

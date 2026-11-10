@@ -37,9 +37,9 @@ function sampleRaw(year, monthIndex) {
   const py = monthIndex === 0 ? year - 1 : year, pm = monthIndex === 0 ? 11 : monthIndex - 1;
   const pLast = lastDay(py, pm), last = lastDay(year, monthIndex);
   const adsStart = [ADS_HEADER, ads('10030', 10), ads('80030', 100), ads('80090', 200), ads('50001', 50), ads('51002', 30),
-    ads('20001', 40), ads('A0030', 20)];
+    ads('20001', 40), ads('A0030', 20), ads('41001', 20)];
   const adsEnd = [ADS_HEADER, ads('10030', 5), ads('80030', 90), ads('80090', 170), ads('50001', 48), ads('51002', 28),
-    ads('20001', 35), ads('A0030', 15)];
+    ads('20001', 35), ads('A0030', 15), ads('41001', 16)];
   const amzStart = [LEDGER_HEADER,
     led(mdy(py, pm, pLast - 1), 'B1', 'A0030 - TEMP SKU', 'SELLABLE', 0, 999, 'FC1'), // not the last day: ignored
     led(mdy(py, pm, pLast), 'B1', 'A0030 - TEMP SKU', 'SELLABLE', 0, 100, 'FC1'),
@@ -107,7 +107,7 @@ function sampleRaw(year, monthIndex) {
   const cogs = (sku, a, b, c) => [sku, sku, '', '', a, b, c, Math.round((a + b + c) * 100) / 100];
   const cogsRows = [cogs('10030', 6.76, 0.08, 0.35), cogs('80030', 2.60, 0.01, 0.35), cogs('80090', 5.78, 0.08, 1.04), cogs('51002', 0.45, 0, 0),
     cogs('50001', 2.10, 0, 0), cogs('20001', 0.59, 0.05, 0), cogs('A0030', 2.52, 0, 0.35), cogs('70003', 147, 0, 50.96),
-    cogs('80090,80090', 11.56, 0.16, 2.08), cogs('80030,51002', 3.05, 0.01, 0.35)]; // A80004 deliberately missing
+    cogs('80090,80090', 11.56, 0.16, 2.08), cogs('80030,51002', 3.05, 0.01, 0.35), cogs('41001', 0.32, 0, 0)]; // A80004 deliberately missing
   const yyyymm = year + '-' + String(monthIndex + 1).padStart(2, '0');
   const woHtml = fs.readFileSync(path.join(__dirname, 'workorders_sample.html'), 'utf8').replace(/2026-09/g, yyyymm);
   return { adsStart, adsEnd, amzStart, ledger, biz, shopify, manualLog, amzLog, bomValues, cogsHeader: COGS_HEADER, cogsRows, woHtml };

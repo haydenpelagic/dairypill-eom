@@ -112,6 +112,10 @@ var CONFIG = {
     renames: { 'A80002': 'A80004' }
   },
 
+  // ---- Rule 8.1a: mailers used when ADS ships these Shopify SKUs --------------
+  // Each unit sold of a SKU in `soldSkus` (the exact Shopify SKU text) uses `perUnit` of `sku`.
+  MAILER_RULE: { sku: '41001', perUnit: 1, soldSkus: ['80030', '80090', '80090,80090', '80090,80090,80090'] },
+
   // ---- Rule 5.5: work-order lines that are fees, not kits ---------------------
   WORK_ORDER_FEE_JOBS: ['Setup Fee'],
 
@@ -1688,14 +1692,20 @@ function manualTabModel_(name, header, rows, numericCols) {
 
 /** Rule 8.1: one row per (Shopify sold SKU, component). */
 function bundleMapModel_(name, soldSkus, tabs, shop) {
-  var values = [['Sold SKU (Shopify)', 'Component SKU', 'Count of component in Sold SKU', 'Units Sold (all Shopify channels)', 'Component Units Shipped']];
+  var values = [['Sold SKU (Shopify)', 'Component SKU', 'Count of component in Sold SKU', 'Units Sold (all Shopify channels)', 'Component Units Shipped', 'Why']];
+  function add(sold, comp, count, why) {
+    var r = values.length + 1;
+    values.push([sold, comp, count,
+      '=SUMIFS(' + colRef_(tabs.shopify, shop.qty) + ',' + colRef_(tabs.shopify, shop.sku) + ',$A' + r + ')',
+      '=C' + r + '*D' + r, why]);
+  }
   soldSkus.forEach(function (sold) {
-    splitBundle_(sold).forEach(function (p) {
-      var r = values.length + 1;
-      values.push([sold, p.sku, p.count,
-        '=SUMIFS(' + colRef_(tabs.shopify, shop.qty) + ',' + colRef_(tabs.shopify, shop.sku) + ',$A' + r + ')',
-        '=C' + r + '*D' + r]);
-    });
+    splitBundle_(sold).forEach(function (p) { add(sold, p.sku, p.count, ''); });
+  });
+  // Rule 8.1a: mailer rows, after the bundle rows.
+  var mr = CONFIG.MAILER_RULE;
+  soldSkus.forEach(function (sold) {
+    if (mr.soldSkus.indexOf(sold) >= 0) add(sold, mr.sku, mr.perUnit, 'Mailer rule (Rule 8.1a)');
   });
   return model_(name, values, { textCols: [0, 1], numberFormats: { 2: '0', 3: '#,##0', 4: '#,##0' }, tabColor: TAB_COLORS.helper });
 }
@@ -2267,6 +2277,7 @@ function buildWorkbookModel_(inputs) {
   var shopSkus = uniqueSorted_(col(inputs.shopify, C.SHOPIFY.sku).filter(function (_, i) { return shopCounted[i]; }));
   var bundleComponents = [];
   shopSkus.forEach(function (s) { splitBundle_(s).forEach(function (p) { bundleComponents.push(p.sku); }); });
+  if (shopSkus.some(function (s) { return CONFIG.MAILER_RULE.soldSkus.indexOf(s) >= 0; })) bundleComponents.push(CONFIG.MAILER_RULE.sku); // Rule 8.1a
   var kitParents = uniqueSorted_(wo.lines.filter(function (l) { return Number(l.pieces) > 0 && l.sku !== ''; }).map(function (l) { return l.sku; }));
   var manualLogSkus = inputs.manualLog.rows.map(function (r) { return r[2]; });
   var amzLogSkus = inputs.amzLog.rows.map(function (r) { return r[2]; });
