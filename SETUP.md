@@ -52,6 +52,8 @@ Good to know:
    - **`manualorder_log`** — every non-Shopify shipment out of ADS (samples, marketing, replacements…), with its **Channel** (DTC, Marketing, CX, TikTok or Samples) and **Ship Date**.
    - **`amz_log`** — every shipment out of ADS to Amazon, with its **Ship Date** (the day it left ADS; leave blank if it hasn't shipped yet).
 
+   **First run only:** last month's ADS snapshot can go in the folder too (or in a `Starting Balances` subfolder). The script tells the two apart by matching last month's against the hand-built September workbook (RULES 2.2a).
+
    **Don't** add a start-of-month ADS snapshot (copied from last month) or a second Amazon ledger (the Amazon starting balance is the 1st-of-month rows of this month's ledger).
    Excel (`.xlsx`) files are not accepted; save as CSV or Google Sheet.
 

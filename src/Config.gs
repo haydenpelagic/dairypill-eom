@@ -48,6 +48,9 @@ var CONFIG = {
   // ---- Rule 6.2 / 7.3: first-run source for COGS and Prepaid -----------------
   // Used only when there is no previous month's workbook to carry them from.
   BOOTSTRAP_WORKBOOK_ID: '1vFNFEbUKyoTlj21PrKWjk_2Yfdhionh7wkkSF2J3pAw', // Sept 2026 (hand-built)
+  // Rule 2.2a: the tab in that workbook holding its ADS ending snapshot. On a first run with two ADS
+  // snapshots in the month folder, the one matching this tab exactly is last month's ending.
+  BOOTSTRAP_ADS_TAB: 'ADS 930',
 
   // ---- Rule 6.2: which COGS columns the summaries read ------------------------
   COGS_COLUMNS: { key: 'Trim', cogs: 'COGS / Unit', freight: 'Freight / Unit', tariffs: 'Tariffs / Unit', total: 'Total / Unit' },

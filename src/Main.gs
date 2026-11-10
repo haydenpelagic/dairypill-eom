@@ -30,6 +30,8 @@ function buildEOMFor_(monthText) {
       'shipments out of ADS are read from Ops Hub "' + CONFIG.OPS_HUB.manualLog.sheetName + '" and "' + CONFIG.OPS_HUB.amzLog.sheetName +
       '". Make sure they are there, then remove the file from the folder and run again.');
   }
+  // Rule 2.2a: first run with last month's snapshot dropped in next to this month's — pick it out by content.
+  var looseAdsStart = splitFirstRunAds_(parent, monthFolder, m, scan);
   requireOneOfEach_(scan, ['ADS', 'LEDGER', 'BIZ', 'SHOPIFY', 'WORK_ORDERS'], m.label);
   var e = {};
   ['ADS', 'LEDGER', 'BIZ', 'SHOPIFY', 'WORK_ORDERS'].forEach(function (k) { e[k] = scan.byType[k][0]; });
@@ -53,7 +55,7 @@ function buildEOMFor_(monthText) {
   };
 
   // Rule 4: starting balances (also checked before anything is written).
-  var start = findStartingBalances_(parent, monthFolder, m);
+  var start = findStartingBalances_(parent, monthFolder, m, looseAdsStart);
   inputs.adsStart = start.ads;
   inputs.amzPrevEnd = start.amzPrevEnd;
   inputs.bomValues = readBomSource_();
@@ -205,7 +207,34 @@ function ensureSellThru_(monthFolder, m, entry, force) {
 // Rule 4: starting balances
 // -----------------------------------------------------------------------------
 
-function findStartingBalances_(parent, monthFolder, m) {
+/**
+ * Rule 2.2a: on a first run (no last-month ADS ending file, no ADS snapshot in "Starting Balances"),
+ * two ADS snapshots in the month folder are allowed: the one identical to the first-run workbook's
+ * ADS tab is last month's ending. It is removed from `scan` and returned; otherwise returns null.
+ */
+function splitFirstRunAds_(parent, monthFolder, m, scan) {
+  var list = scan.byType.ADS;
+  if (list.length !== 2) return null;
+  var prevFolder = subfolder_(parent, m.prevLabel, false);
+  if (prevFolder && monthFileEntry_(prevFolder, 'ADS Ending Balance ' + m.prevEndStr, true)) return null;
+  if (monthFileEntry_(monthFolder, tabNames_(m).adsStart, true)) return null;
+  var bootFolder = subfolder_(monthFolder, CONFIG.STARTING_BALANCES_SUBFOLDER, false);
+  if (bootFolder && scanFolder_(bootFolder, m).byType.ADS.length) return null;
+  var refLabel = 'the "' + CONFIG.BOOTSTRAP_ADS_TAB + '" tab of the first-run workbook';
+  var book = SpreadsheetApp.openById(CONFIG.BOOTSTRAP_WORKBOOK_ID);
+  var sheet = sheetByName_(book, CONFIG.BOOTSTRAP_ADS_TAB);
+  if (!sheet) throw new Error('Two ADS stock snapshots are in "' + m.label + '" and the first-run workbook has no "' + CONFIG.BOOTSTRAP_ADS_TAB +
+    '" tab to tell them apart. Put last month\'s snapshot in a subfolder named "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '".');
+  var ref = adsTableFromSheetValues_(sheet.getDataRange().getValues(), refLabel);
+  var tables = list.map(function (e) { return tableFromEntry_(e, 'ADS stock snapshot "' + e.file.getName() + '"'); });
+  var i = matchingAdsSnapshot_(tables, ref, list.map(function (e) { return '"' + e.file.getName() + '"'; }), refLabel);
+  var startEntry = list[i];
+  scan.byType.ADS = list.filter(function (_, j) { return j !== i; });
+  log_('  "' + startEntry.file.getName() + '" matches ' + refLabel + ' — used as the ' + m.prevEndMDY + ' ADS starting balance.');
+  return startEntry;
+}
+
+function findStartingBalances_(parent, monthFolder, m, looseAdsStart) {
   var tabs = tabNames_(m);
   var prevFolder = subfolder_(parent, m.prevLabel, false);
   var bootFolder = subfolder_(monthFolder, CONFIG.STARTING_BALANCES_SUBFOLDER, false);
@@ -215,11 +244,21 @@ function findStartingBalances_(parent, monthFolder, m) {
   // ADS (Rule 4.1). Last month's file is found by name with or without ".csv", or as a Google Sheet (Rule 2.3).
   var prevAdsBase = 'ADS Ending Balance ' + m.prevEndStr;
   var adsFound = prevFolder ? monthFileEntry_(prevFolder, prevAdsBase) : null;
-  var adsEntry;
+  var startHere = adsFound ? null : monthFileEntry_(monthFolder, tabs.adsStart); // identified on an earlier run (rule 2.2a)
+  var adsEntry, renameLoose = false;
   if (adsFound) {
     if (adsFound.type !== 'ADS') throw new Error('"' + adsFound.file.getName() + '" in the ' + m.prevLabel + ' folder is not an ADS stock snapshot.');
     adsEntry = adsFound;
     notes.push('ADS: "' + adsFound.file.getName() + '" from the ' + m.prevLabel + ' folder');
+  } else if (startHere) {
+    if (startHere.type !== 'ADS') throw new Error('"' + startHere.file.getName() + '" in the ' + m.label + ' folder is not an ADS stock snapshot.');
+    adsEntry = startHere;
+    notes.push('ADS: "' + startHere.file.getName() + '" in the ' + m.label + ' folder');
+  } else if (looseAdsStart) {
+    adsEntry = looseAdsStart;
+    renameLoose = true;
+    notes.push('ADS: "' + looseAdsStart.file.getName() + '" from the ' + m.label + ' folder — it matches the "' + CONFIG.BOOTSTRAP_ADS_TAB +
+      '" tab of the first-run workbook (first run; renamed "' + tabs.adsStart + '")');
   } else if (boot && boot.byType.ADS.length === 1) {
     adsEntry = boot.byType.ADS[0];
     notes.push('ADS: "' + adsEntry.file.getName() + '" from the "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder (first run)');
@@ -263,6 +302,7 @@ function findStartingBalances_(parent, monthFolder, m) {
     ads: tableFromEntry_(adsEntry, 'starting ADS snapshot'), amzPrevEnd: amzPrev, sourceText: notes.join('; ') + '.',
     // Rule 4.1: a copy of the starting ADS snapshot goes into this month's folder (done after all checks pass).
     copyAdsStartFile: function () {
+      if (renameLoose) { renameEntry_(adsEntry, tabs.adsStart); return; } // rule 2.2a: it is already in the month folder
       var isSheet = adsEntry.file.getMimeType() === MimeType.GOOGLE_SHEETS;
       if (monthFileEntry_(monthFolder, tabs.adsStart, true)) return;
       adsEntry.file.makeCopy(tabs.adsStart + (isSheet ? '' : '.csv'), monthFolder);

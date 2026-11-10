@@ -68,10 +68,14 @@ gas.spreadsheetWithId(ctx.CONFIG.BOM_SOURCE.spreadsheetId, 'DairyPill Ops Hub 2.
   amz_log: stackLog('amzLog').map((r) => r.concat(['October'])) // extra columns past F are ignored
 });
 const cogsWithFormulas = [rawSep.cogsHeader].concat(rawSep.cogsRows.map((r, i) => ['=TRIM(B' + (i + 2) + ')'].concat(r.slice(1))));
-const bootWb = gas.spreadsheetWithId(ctx.CONFIG.BOOTSTRAP_WORKBOOK_ID, 'Sept hand-built', null, {
+const makeBootWb = () => gas.spreadsheetWithId(ctx.CONFIG.BOOTSTRAP_WORKBOOK_ID, 'Sept hand-built', null, {
   COGS: cogsWithFormulas,
-  Prepaid: [['Prepaid POs', 'Invoice', 'SKU'], ['POUCHES-26', '102973', '80030']]
+  Prepaid: [['Prepaid POs', 'Invoice', 'SKU'], ['POUCHES-26', '102973', '80030']],
+  // Rule 2.2a: the hand-built workbook's ADS ending tab — a title row, a blank row, then the snapshot
+  // (rows in a different order and quantities as numbers, as Sheets returns them).
+  'ADS 930': [['9/30/26'], ['']].concat([rawSep.adsStart[0]], rawSep.adsStart.slice(1).reverse().map((r) => r.map((v, i) => (i === 7 ? Number(v) : v))))
 });
+const bootWb = makeBootWb();
 ctx.CONFIG.PARENT_FOLDER_ID = parent.getId();
 ctx.CONFIG.MONTH_OVERRIDE = 'September 2026';
 
@@ -296,4 +300,40 @@ test('a leftover Manual Orders file, or a Shopify export without status columns,
   assert.throws(() => ctx.buildEOM(), /missing the column "Cancelled at"/);
   assert.throws(() => ctx.shopifyOnly(), /missing the column "Cancelled at"/);
   assert.deepEqual(names(apr), before2, 'nothing renamed or created');
+});
+
+test('Rule 2.2a: first run with last month\'s ADS snapshot loose in the month folder — found by matching the first-run workbook', () => {
+  if (!gas.drive.files.get(ctx.CONFIG.BOOTSTRAP_WORKBOOK_ID)) makeBootWb(); // an earlier test deletes it
+  const jun = parent.createFolder('June 2027');
+  const raw = sampleRaw(2027, 5);
+  putMonthFiles(jun, raw);                                                              // this month's snapshot: (12)
+  jun.createFile('DY_Stock_Snapshot_Palisades (19).csv', csv(raw.adsStart));            // last month's, higher number
+  ctx.CONFIG.MONTH_OVERRIDE = 'June 2027';
+  ctx.buildEOM();
+  const n = names(jun);
+  assert.ok(n.includes('ADS Starting Balance 05.31.2027.csv'), 'the matching snapshot is renamed as the starting balance');
+  assert.ok(n.includes('ADS Ending Balance 06.30.2027.csv'), 'the other one is this month\'s ending');
+  assert.ok(!n.some((x) => /Palisades/.test(x)), 'both snapshots identified');
+  const ss = findFile(jun, 'DAIRYPILL_EOM COGS - June 2027').ss;
+  const tabs = ctx.tabNames_(ctx.monthInfo_(2027, 5));
+  const wb = calc(ss);
+  const ads = rowOf(ss, tabs.variance, 'ADS', '80030');
+  assert.equal(wb.value(tabs.variance, ads, 5), 100, 'Beginning = the matched (start) snapshot');
+  assert.equal(wb.value(tabs.variance, ads, 9), 90, 'Actual = this month\'s snapshot');
+  const checks = ss.getSheetByName(tabs.checks).rawValues();
+  assert.match(checks.find((x) => x[1] === 'Starting balances came from')[3], /matches the "ADS 930" tab of the first-run workbook/);
+  ctx.buildEOM(); // rebuild: the renamed starting file is found again, nothing doubles
+  assert.deepEqual(names(jun), n);
+});
+
+test('Rule 2.2a: two loose ADS snapshots and neither matches the first-run workbook — stops before anything changes', () => {
+  if (!gas.drive.files.get(ctx.CONFIG.BOOTSTRAP_WORKBOOK_ID)) makeBootWb(); // an earlier test deletes it
+  const jul = parent.createFolder('July 2028');
+  const raw = sampleRaw(2028, 6);
+  putMonthFiles(jul, raw);
+  jul.createFile('other snapshot.csv', csv(raw.adsStart.map((r, i) => (i === 1 ? r.map((v, j) => (j === 7 ? '11' : v)) : r))));
+  ctx.CONFIG.MONTH_OVERRIDE = 'July 2028';
+  const before = names(jul);
+  assert.throws(() => ctx.buildEOM(), /There are 2 ADS stock snapshots in the month folder .* and none of them matches the "ADS 930" tab/);
+  assert.deepEqual(names(jul), before);
 });

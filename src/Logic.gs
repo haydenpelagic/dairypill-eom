@@ -165,6 +165,43 @@ function toTable_(rows, label) {
 // Rule 2: recognize files by their columns
 // ---------------------------------------------------------------------------
 
+/**
+ * Rule 2.2a: an ADS snapshot as a comparable list of "SKU|Lot|Qty On Hand" (sorted), so two
+ * snapshots can be checked for being the same report whatever their file names, cell types or row order.
+ */
+function adsSignature_(table) {
+  var A = CONFIG.COLUMNS.ADS;
+  var si = requireHeader_(table.header, A.sku, 'ADS stock snapshot');
+  var li = requireHeader_(table.header, 'Lot Code', 'ADS stock snapshot');
+  var qi = requireHeader_(table.header, A.qty, 'ADS stock snapshot');
+  return table.rows.filter(function (r) { return cleanSku_(r[si]) !== ''; }).map(function (r) {
+    var q = toNumber_(r[qi], 'in the ADS stock snapshot (' + A.qty + ')');
+    return cleanSku_(r[si]) + '|' + textCell_(r[li]).trim() + '|' + (q === '' ? 0 : q);
+  }).sort().join('\n');
+}
+
+/** Rule 2.2a: an ADS snapshot pasted into a sheet with a title above it — the table starts at the "Stock Number" row. */
+function adsTableFromSheetValues_(values, label) {
+  for (var i = 0; i < Math.min(values.length, 10); i++) {
+    if (headerIndex_(values[i], CONFIG.COLUMNS.ADS.sku) >= 0) return toTable_(values.slice(i), label);
+  }
+  throw new Error('Could not find the "' + CONFIG.COLUMNS.ADS.sku + '" header in ' + label + '.');
+}
+
+/**
+ * Rule 2.2a: of several ADS snapshot tables, the index of the one identical to `reference`.
+ * Exactly one must match, or the run stops (it never guesses).
+ */
+function matchingAdsSnapshot_(tables, reference, names, refLabel) {
+  var ref = adsSignature_(reference);
+  var hits = [];
+  tables.forEach(function (t, i) { if (adsSignature_(t) === ref) hits.push(i); });
+  if (hits.length === 1) return hits[0];
+  throw new Error('There are ' + tables.length + ' ADS stock snapshots in the month folder (' + names.join(', ') + ') and ' +
+    (hits.length ? 'more than one' : 'none') + ' of them matches ' + refLabel + ', so the script cannot tell which is last month\'s ending. ' +
+    'Keep only this month\'s snapshot in the folder and put last month\'s in a subfolder named "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '".');
+}
+
 function identifyHeader_(header) {
   var types = CONFIG.FILE_TYPES;
   for (var key in types) {
