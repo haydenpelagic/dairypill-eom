@@ -5,6 +5,7 @@
 //   3. October, carried forward from September (ADS/AMZ/MFG starting balances, COGS, SKU map)
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const close = (a, b, msg) => assert.ok(typeof a === 'number' && Math.abs(a - b) < 1e-6, (msg || '') + ' ' + a + ' ≠ ' + b);
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
@@ -127,10 +128,14 @@ test('1. first run for September builds the full workbook', () => {
   assert.deepEqual(COLS.map((c) => wb.value(tabs.variance, r, c)), [200, 0, 5, 195, 170, -25]);
   const a = rowOf(ss, tabs.variance, 'Amazon', 'A0030');
   assert.deepEqual(COLS.map((c) => wb.value(tabs.variance, a, c)), [120, 15, 20, 115, 115, 0]);
-  // COGS copied from the first-run workbook, old Trim column removed (Rule 6.2)
-  assert.deepEqual(ss.getSheetByName('COGS').rawValues()[0].slice(0, 6), ['SKU', 'Description', 'Base Cost', 'Freight In', 'Tariff', 'Total / Unit']);
-  assert.equal(ss.getSheetByName('COGS').rawValues()[1][0], '10030');
-  assert.equal(wb.value(tabs.variance, r, 11), 6.9);
+  // Rule 6.2: COGS is created blank (never copied from the first-run workbook): every SKU, costs empty, Total = sum formula
+  const cogsTab = ss.getSheetByName('COGS').rawValues();
+  assert.deepEqual(cogsTab[0], ['SKU', 'Description', 'Base Cost', 'Freight In', 'Tariff', 'Total / Unit']);
+  const c80090 = cogsTab.find((x) => x[0] === '80090');
+  assert.deepEqual(c80090.slice(1), ['90ct Pouch', '', '', '', '=IF(COUNT(C' + (cogsTab.indexOf(c80090) + 1) + ',D' + (cogsTab.indexOf(c80090) + 1) +
+    ',E' + (cogsTab.indexOf(c80090) + 1) + ')=0,"",SUM(C' + (cogsTab.indexOf(c80090) + 1) + ',D' + (cogsTab.indexOf(c80090) + 1) + ',E' + (cogsTab.indexOf(c80090) + 1) + '))']);
+  assert.equal(wb.value(tabs.variance, r, 11), 'NO COST', 'no cost typed yet → NO COST, not $0');
+  assert.equal(wb.value(tabs.valuation, rowOf(ss, tabs.valuation, 'ADS', '80090'), 9), 'NO COST');
   // First run: MFG start comes from the hand-built workbook; MFG Counts is pre-filled with its rows, quantities to type
   const checks = ss.getSheetByName(tabs.checks).rawValues();
   const res = (label) => wb.value(tabs.checks, checks.findIndex((x) => x[1] === label) + 1, 3);
@@ -157,7 +162,10 @@ test('2. typing MFG Counts + ADS Receipts: summaries update without a rerun; run
   assert.deepEqual(COLS.map((c) => live.value(tabs.variance, vpLive, c)), [0, 300, 0, 300, 300, 0]);
   assert.equal(live.value(tabs.valuation, rowOf(ss, tabs.valuation, 'VitaPros', '70003'), 5), 300);
   ss.getSheetByName(tabs.adsReceipts).getRange(2, 1, 1, 3).setValues([['PO-1', '50001', 10]]);
-  ss.getSheetByName('COGS').getRange(13, 1, 1, 6).setValues([['A80004', '', 1, 0.03, 0, 1.03]]); // you add a missing cost
+  // You type the costs on COGS (Rule 6.2): Base Cost, Freight In, Tariff for each SKU row; Total / Unit is the sum formula.
+  const cogsSheet = ss.getSheetByName('COGS');
+  const typed = Object.fromEntries(rawSep.cogsRows.map((x) => [x[0], x.slice(2, 5)]).concat([['A80004', [1, 0.03, 0]]]));
+  cogsSheet.rawValues().forEach((row, i) => { if (i > 0 && typed[row[0]]) cogsSheet.getRange(i + 1, 3, 1, 3).setValues([typed[row[0]]]); });
 
   ctx.buildEOM();
   const ss2 = findFile(sep, 'DAIRYPILL_EOM COGS - September 2026').ss;
@@ -170,7 +178,8 @@ test('2. typing MFG Counts + ADS Receipts: summaries update without a rerun; run
   const ads = rowOf(ss2, tabs.variance, 'ADS', '50001');
   assert.deepEqual(COLS.map((c) => wb.value(tabs.variance, ads, c)), [50, 10, 3, 57, 48, -9]);
   const a8 = rowOf(ss2, tabs.variance, 'Amazon', 'A80004');
-  assert.equal(wb.value(tabs.variance, a8, 11), 1.03, 'your COGS edit is used');
+  close(wb.value(tabs.variance, a8, 11), 1.03, 'your COGS entry is used');
+  close(wb.value(tabs.variance, ads, 11), 2.10);
   const checks = ss2.getSheetByName(tabs.checks).rawValues();
   const res = (label) => wb.value(tabs.checks, checks.findIndex((x) => x[1] === label) + 1, 3);
   assert.equal(res('MFG Counts filled in'), 'OK');
@@ -219,8 +228,9 @@ test('3. October carries everything forward from September (first-run workbook n
   assert.equal(wb.value(tabs.variance, vq, COLS[0]), 120);
   const vp = rowOf(ss, tabs.variance, 'VitaPros', '70003');
   assert.equal(wb.value(tabs.variance, vp, COLS[0]), 300);
-  // COGS (with your A80004 edit) and the SKU map came from September's workbook
-  assert.ok(ss.getSheetByName('COGS').rawValues().some((r) => r[0] === 'A80004'));
+  // COGS is NOT carried from September: a new blank one (Rule 6.2); the SKU map is carried
+  const octCogs = ss.getSheetByName('COGS').rawValues();
+  assert.ok(octCogs.some((r) => r[0] === 'A80004' && r[2] === '' && r[3] === '' && r[4] === ''));
   const map = ss.getSheetByName('AMZ SKU Map').rawValues();
   assert.ok(map.some((r) => r[0] === 'A80002' && r[2] === 'A80004'));
   const checks = ss.getSheetByName(tabs.checks).rawValues();

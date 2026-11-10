@@ -401,3 +401,25 @@ test('Rule 6.2: COGS in the new layout (no Trim); a SKU stored as a number still
   assert.ok(!b.sheets.find((s) => s.name === b.tabs.checks).values.find((x) => x[1] === 'SKUs with no COGS cost')[3].includes('80090,'),
     'Checks does not list 80090 as missing');
 });
+
+test('Rule 6.2: with no COGS tab yet, a blank one is created — every SKU, costs empty, Total = sum; blanks show NO COST until typed', () => {
+  const inputs = sampleInputs(L);
+  inputs.cogs = null;
+  const b = L.buildWorkbookModel_(inputs);
+  const cogs = b.sheets.find((s) => s.name === b.tabs.cogs);
+  assert.deepEqual(plain(cogs.values[0]), ['SKU', 'Description', 'Base Cost', 'Freight In', 'Tariff', 'Total / Unit']);
+  assert.ok(cogs.preserveIfExists, 'never overwritten once it exists');
+  const skus = cogs.values.slice(1).map((r) => r[0]);
+  for (const s of ['10030', '80090', '80090,80090', 'A80004', '70003', '41001']) assert.ok(skus.includes(s), s + ' listed');
+  assert.ok(cogs.values.slice(1).every((r) => r[2] === '' && r[3] === '' && r[4] === '' && /^=IF\(COUNT\(/.test(r[5])), 'only the sum formula is filled');
+  let w = workbookFromModels(b.sheets);
+  const v = b.sheets.find((s) => s.name === b.tabs.variance).values;
+  const r = v.findIndex((x) => x[0] === 'ADS' && x[1] === '80090') + 1;
+  assert.equal(w.value(b.tabs.variance, r, 11), 'NO COST');
+  assert.match(b.sheets.find((s) => s.name === b.tabs.checks).values.find((x) => x[1] === 'SKUs with no COGS cost')[3], /created this run with every SKU and blank costs/);
+  // Type only a Base Cost: Total / Unit sums what is there and the cost appears without a rebuild.
+  const i = cogs.values.findIndex((x) => x[0] === '80090');
+  const typed = cogs.values.map((row, k) => (k === i ? [row[0], row[1], 6.5, 0.4, '', row[5]] : row));
+  w = workbookFromModels(b.sheets.map((s) => (s === cogs ? Object.assign({}, s, { values: typed }) : s)));
+  close(w.value(b.tabs.variance, r, 11), 6.9);
+});

@@ -81,11 +81,12 @@ function buildEOMFor_(monthText) {
   function boot() { return bootSs || (bootSs = SpreadsheetApp.openById(CONFIG.BOOTSTRAP_WORKBOOK_ID)); }
 
   // Rule 6.2 / 7.3: COGS and Prepaid — keep this month's, else carry from last month, else first-run workbook.
-  var cogsSrc = carriedTab_(ss, prevSs, boot, tabs.cogs, CONFIG.COGS_COLUMNS.key);
-  inputs.cogs = cogsSrc.table;
+  // Rule 6.2: COGS is typed by hand each month — this month's tab if it exists, else created blank (never carried).
+  var cogsSheet = sheetByName_(ss, tabs.cogs);
+  inputs.cogs = cogsSheet ? readSheetTable_(cogsSheet, CONFIG.COGS_COLUMNS.key) : null;
   var prepaidSrc = carriedTab_(ss, prevSs, boot, tabs.prepaid, null, true);
   inputs.prepaid = prepaidSrc ? prepaidSrc.table : null;
-  inputs.copyFrom = { cogs: cogsSrc.copyFrom, prepaid: prepaidSrc ? prepaidSrc.copyFrom : null };
+  inputs.copyFrom = { prepaid: prepaidSrc ? prepaidSrc.copyFrom : null };
 
   // Rule 6.3: Amazon SKU map — this month's, else last month's.
   var mapSheet = sheetByName_(ss, tabs.skuMap) || (prevSs && sheetByName_(prevSs, tabs.skuMap));

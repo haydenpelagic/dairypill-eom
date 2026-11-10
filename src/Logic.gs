@@ -1015,6 +1015,26 @@ function skuListModel_(name, descs) {
   return model_(name, values, { textCols: [0, 1, 2], tabColor: TAB_COLORS.reference });
 }
 
+/** Rule 6.2: a new COGS tab — one row per SKU (A→Z), costs blank, Total / Unit = sum (blank until a cost is typed). */
+function blankCogsModel_(name, skus, descs) {
+  var H = CONFIG.COGS_HEADER, C = CONFIG.COGS_COLUMNS;
+  var col = function (n) { return colLetter_(requireHeader_(H, n, 'COGS_HEADER in Config') + 1); };
+  var parts = [col(C.cogs), col(C.freight), col(C.tariffs)];
+  var keyI = headerIndex_(H, C.key), descI = headerIndex_(H, 'Description'), totalI = headerIndex_(H, C.total);
+  var values = [H.slice()];
+  skus.forEach(function (sku) {
+    var r = values.length + 1, row = H.map(function () { return ''; });
+    var cells = parts.map(function (p) { return p + r; }).join(',');
+    row[keyI] = sku;
+    if (descI >= 0) row[descI] = descs.desc[sku] || '';
+    row[totalI] = '=IF(COUNT(' + cells + ')=0,"",SUM(' + cells + '))';
+    values.push(row);
+  });
+  var nf = {};
+  H.forEach(function (h, i) { if (i !== keyI && i !== descI) nf[i] = '$#,##0.00'; });
+  return model_(name, values, { textCols: [keyI], numberFormats: nf, tabColor: TAB_COLORS.manual, preserveIfExists: true });
+}
+
 function skuMapModel_(name, rows) {
   return model_(name, [['Amazon MSKU', 'ASIN', 'Our SKU', 'Note']].concat(rows), {
     textCols: [0, 1, 2, 3], tabColor: TAB_COLORS.reference
@@ -1114,8 +1134,10 @@ var VARIANCE_HEADER_ROW = 4;
 function costLookup_(ctx, which, skuCell) {
   // Rule 6.2: match the SKU as text, then as a number (a COGS SKU typed as 10030 is a number; ours is text "10030").
   var val = colRef_(ctx.tabs.cogs, ctx.cogs[which]), key = colRef_(ctx.tabs.cogs, ctx.cogs.key);
-  return '=IFERROR(INDEX(' + val + ',MATCH(' + skuCell + ',' + key + ',0)),IFERROR(INDEX(' + val + ',MATCH(' + skuCell + '*1,' + key +
-    ',0)),' + q_(CONFIG.NO_COST_TEXT) + '))';
+  var byText = 'INDEX(' + val + ',MATCH(' + skuCell + ',' + key + ',0))', byNumber = 'INDEX(' + val + ',MATCH(' + skuCell + '*1,' + key + ',0))';
+  // Total / Unit must be a number: blank (cost not typed yet) → NO COST, never $0. (0/0 = an error, so the next try runs.)
+  var num = function (x) { return which === 'total' ? 'IF(ISNUMBER(' + x + '),' + x + ',0/0)' : x; };
+  return '=IFERROR(' + num(byText) + ',IFERROR(' + num(byNumber) + ',' + q_(CONFIG.NO_COST_TEXT) + '))';
 }
 
 function descLookup_(ctx, skuCell) {
@@ -1255,8 +1277,8 @@ function varianceModel_(ctx, blocks) {
 // Rule 10: Inventory Valuation
 // ---------------------------------------------------------------------------
 
-var VALUATION_HEADER = ['Location', 'SKU', 'Description', 'Categorization', 'Available Inventory', 'COGS / Unit',
-  'Freight / Unit', 'Tariffs / Unit', 'COGS + Freight + Tariffs', 'Total Inventory Value'];
+var VALUATION_HEADER = ['Location', 'SKU', 'Description', 'Categorization', 'Available Inventory', 'Base Cost',
+  'Freight In', 'Tariff', 'Total / Unit', 'Total Inventory Value'];
 
 function categorizations_() {
   var out = [];
@@ -1289,7 +1311,7 @@ function valuationModel_(ctx, blocks) {
         values.push(['=IF(' + V + 'B' + vr + '="","",' + V + 'A' + vr + ')', '=IF(' + V + 'B' + vr + '="","",' + V + 'B' + vr + ')',
           bi(inner(descLookup_(ctx, S))), bi(q_(b.categorization)), bi(V + 'I' + vr),
           bi(inner(costLookup_(ctx, 'cogs', S))), bi(inner(costLookup_(ctx, 'freight', S))), bi(inner(costLookup_(ctx, 'tariffs', S))),
-          bi('IFERROR(F' + r + '+G' + r + '+H' + r + ',' + q_(CONFIG.NO_COST_TEXT) + ')'),
+          bi(inner(costLookup_(ctx, 'total', S))),
           bi('IF(E' + r + '=0,0,IFERROR(E' + r + '*I' + r + ',' + q_(CONFIG.NO_COST_TEXT) + '))')]);
       }
       return;
@@ -1299,7 +1321,7 @@ function valuationModel_(ctx, blocks) {
       values.push([b.label, sku, descLookup_(ctx, '$B' + r), b.categorization,
         '=SUMIFS(' + colRef_(t.variance, 'I') + ',' + colRef_(t.variance, 'A') + ',$A' + r + ',' + colRef_(t.variance, 'B') + ',$B' + r + ')',
         costLookup_(ctx, 'cogs', '$B' + r), costLookup_(ctx, 'freight', '$B' + r), costLookup_(ctx, 'tariffs', '$B' + r),
-        '=IFERROR(F' + r + '+G' + r + '+H' + r + ',' + q_(CONFIG.NO_COST_TEXT) + ')',
+        costLookup_(ctx, 'total', '$B' + r),
         '=IF(E' + r + '=0,0,IFERROR(E' + r + '*I' + r + ',' + q_(CONFIG.NO_COST_TEXT) + '))']);
     });
   });
@@ -1399,7 +1421,8 @@ function checksModel_(ctx, info) {
 
   var noCost = 'COUNTIF(' + colRef_(t.variance, 'K') + ',' + NC + ')+COUNTIF(' + colRef_(t.outbound, 'B') + ',' + NC + ')';
   add('12.1', 'SKUs with no COGS cost', flagIf_('(' + noCost + ')', 'cells show "' + CONFIG.NO_COST_TEXT + '" — add these SKUs to the COGS tab'),
-    info.noCostSkus.length ? 'Not on COGS: ' + info.noCostSkus.join(', ') : 'Every SKU has a COGS row.');
+    (info.cogsCreated ? 'COGS was created this run with every SKU and blank costs — type Base Cost, Freight In and Tariff; the NO COST cells clear as you type (no rerun). ' : '') +
+    (info.noCostSkus.length ? 'Not on COGS (add a row): ' + info.noCostSkus.join(', ') : 'Every SKU has a COGS row.'));
   add('12.2', 'SKUs with no description', flagIf_('COUNTIF(' + colRef_(t.variance, 'C') + ',' + q_(CONFIG.NO_DESCRIPTION_TEXT) + ')', 'rows — add them to the Ops Hub BOM'),
     info.noDescSkus.length ? 'No description: ' + info.noDescSkus.join(', ') : '');
   var unmapped = '(COUNTIF(' + colRef_(t.ledger, c.ledger.mapped) + ',' + UN + ')+COUNTIF(' + colRef_(t.amzStart, c.amzStart.mapped) + ',' + UN +
@@ -1532,7 +1555,7 @@ function readmeModel_(ctx) {
     [t.woFixes, 'YOU TYPE (when Checks asks): our SKU for work-order lines whose Job is blank or not a SKU. Kept month to month.', '5.5a'],
     [t.mfgStart, 'Last month\'s MFG EOM quantities (from last month\'s MFG Counts; first run: the hand-built workbook).', '4.3'],
     [t.prepaid, 'YOU TYPE: prepaid POs. Feeds nothing.', '7.3'],
-    [t.cogs, 'Unit costs. Carried from last month; edit here.', '6.2'],
+    [t.cogs, 'YOU TYPE: Base Cost, Freight In, Tariff per SKU (created blank each month; Total / Unit is a sum). Never overwritten.', '6.2'],
     [t.skuMap, 'Amazon MSKU / ASIN → our SKU. New Amazon SKUs are added automatically.', '6.3'],
     [t.bundleMap, 'Shopify SKUs split into components (80090,80090 → 80090 × 2).', '8.1'],
     [t.kit, 'Components used by kits built this month (BOM qty × kits built).', '8.2'],
@@ -1564,12 +1587,12 @@ function readmeModel_(ctx) {
  *   amzPrevEnd : {rows: {header, rows} | null, source: text, problem: text | null}  (Rule 4.2a tie-out; optional)
  *   workOrders : parseWorkOrdersHtml_ result
  *   bomValues  : raw values from the Ops Hub BOM columns
- *   cogs       : {header, rows}                 (values)
  *   skuMapExisting : [[msku, asin, sku, note]]
  *   mfgInv : [[mfg, sku, eom, recv]] | null (null = MFG Counts tab not created yet), mfgStart : [[mfg, sku, eom]], mfgStartFromPrev : bool
  *   adsReceipts : [[po, sku, qty]]
  *   prepaid : {header, rows} | null
- *   copyFrom : {cogs, prepaid}   (where to copy those tabs from if they don't exist yet)
+ *   cogs : {header, rows} of this month's COGS tab, or null (then a blank one is created — Rule 6.2)
+ *   copyFrom : {prepaid}   (where to copy Prepaid from if it doesn't exist yet)
  *   sources : {startSources, shopifySource, mfgStartSource}, ignoredFiles : []
  * }
  */
@@ -1614,16 +1637,8 @@ function buildWorkbookModel_(inputs) {
   var woM = workOrdersModel_(tabs.workOrders, woParsed);
 
   // --- column letters the summaries use
-  // Rule 6.2: when COGS is carried from another workbook, old helper columns (Trim) are left behind.
-  var cogsTable = inputs.cogs, cogsDrop = [];
-  if (inputs.copyFrom && inputs.copyFrom.cogs) {
-    cogsDrop = CONFIG.COGS_DROP_COLUMNS.filter(function (n) { return headerIndex_(cogsTable.header, n) >= 0; });
-    var keep = [];
-    var dropIdx = cogsDrop.map(function (n) { return headerIndex_(cogsTable.header, n); });
-    cogsTable.header.forEach(function (_, i) { if (dropIdx.indexOf(i) < 0) keep.push(i); });
-    cogsTable = { header: keep.map(function (i) { return cogsTable.header[i]; }),
-      rows: cogsTable.rows.map(function (r) { return keep.map(function (i) { return r[i]; }); }) };
-  }
+  // Rule 6.2: COGS = this month's tab as you typed it; if there is none, a blank one is created below.
+  var cogsTable = inputs.cogs || { header: CONFIG.COGS_HEADER.slice(), rows: [] };
   var cogsH = cogsTable.header;
   var cogs = {};
   for (var k in CONFIG.COGS_COLUMNS) cogs[k] = colLetter_(requireHeader_(cogsH, CONFIG.COGS_COLUMNS[k], 'COGS tab') + 1);
@@ -1719,10 +1734,16 @@ function buildWorkbookModel_(inputs) {
 
   var cogsKeys = {};
   var cogsKeyIdx = headerIndex_(cogsH, CONFIG.COGS_COLUMNS.key);
-  cogsTable.rows.forEach(function (r) { cogsKeys[cleanSku_(r[cogsKeyIdx])] = true; });
+  var cogsFilled = {};
+  var totalIdx = headerIndex_(cogsH, CONFIG.COGS_COLUMNS.total);
+  cogsTable.rows.forEach(function (r) {
+    cogsKeys[cleanSku_(r[cogsKeyIdx])] = true;
+    if (typeof r[totalIdx] === 'number') cogsFilled[cleanSku_(r[cogsKeyIdx])] = true;
+  });
   var costedSkus = uniqueSorted_([].concat(adsSkus, amzSkus, outboundSkus, blocks.slice(2).reduce(function (a, b) { return a.concat(b.skus); }, [])));
   var info = {
     noCostSkus: costedSkus.filter(function (s) { return !cogsKeys[s]; }),
+    cogsCreated: !inputs.cogs,
     noDescSkus: allSkus.filter(function (s) { return !descs.desc[s]; }),
     unmappedAsins: uniqueSorted_(unmappedAsins),
     mapAdded: map.added,
@@ -1749,9 +1770,9 @@ function buildWorkbookModel_(inputs) {
   var mfgStartM = manualTabModel_(tabs.mfgStart, H.MFG_STARTING, inputs.mfgStart, [2]);
   if (inputs.mfgStartFromPrev) { mfgStartM.preserveIfExists = false; mfgStartM.tabColor = TAB_COLORS.raw; }
   var adsRecM = manualTabModel_(tabs.adsReceipts, H.ADS_RECEIPTS, inputs.adsReceipts, [2]);
-  var cogsM = model_(tabs.cogs, [cogsTable.header].concat(cogsTable.rows), {
-    preserveIfExists: true, tabColor: TAB_COLORS.manual, copyFrom: inputs.copyFrom ? inputs.copyFrom.cogs : null,
-    dropColumns: cogsDrop });
+  var cogsM = inputs.cogs
+    ? model_(tabs.cogs, [cogsTable.header].concat(cogsTable.rows), { preserveIfExists: true, tabColor: TAB_COLORS.manual })
+    : blankCogsModel_(tabs.cogs, costedSkus, descs);
   var prepaidM = inputs.prepaid
     ? model_(tabs.prepaid, [inputs.prepaid.header].concat(inputs.prepaid.rows), { preserveIfExists: true, tabColor: TAB_COLORS.manual,
       copyFrom: inputs.copyFrom ? inputs.copyFrom.prepaid : null })

@@ -47,14 +47,6 @@ function writeModel_(ss, model) {
     if (!src) throw new Error('Could not find tab "' + model.copyFrom.sheetName + '" to copy into ' + model.name + '.');
     var copy = src.copyTo(ss);
     copy.setName(model.name);
-    // Rule 6.2: remove old helper columns (e.g. Trim) from the copy — header found in the first 10 rows.
-    (model.dropColumns || []).forEach(function (name) {
-      var top = copy.getRange(1, 1, Math.min(10, Math.max(copy.getLastRow(), 1)), Math.max(copy.getLastColumn(), 1)).getValues();
-      for (var r = 0; r < top.length; r++) {
-        var c = headerIndex_(top[r], name);
-        if (c >= 0) { copy.deleteColumn(c + 1); break; }
-      }
-    });
     if (model.tabColor) copy.setTabColor(model.tabColor);
     return 'copied';
   }
