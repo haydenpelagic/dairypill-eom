@@ -384,15 +384,19 @@ test('Rule 5.5a: kit lines with a blank or wordy Job — counted when certain, o
   assert.equal(ok.find((r) => r[1] === 'Work-order lines with no usable SKU (kits NOT counted)')[2], 'OK');
 });
 
-test('Rule 8.1a: one 41001 mailer per unit sold of 80030 / 80090 / 80090,80090 / 80090,80090,80090 (counted Shopify lines)', () => {
+test('Rule 8.1a: one 41001 mailer per unit sold of 80030 / 80090 / 80090,80090 / 80090,80090,80090 and of any bundle with a pouch (counted Shopify lines)', () => {
   const bm = sheet(T.bundleMap).values;
-  const mailerRows = bm.filter((r) => r[1] === '41001').map((r) => [r[0], r[2], r[5]]);
-  assert.deepEqual(plain(mailerRows), [['80030', 1, 'Mailer rule (Rule 8.1a)'], ['80090', 1, 'Mailer rule (Rule 8.1a)'],
-    ['80090,80090', 1, 'Mailer rule (Rule 8.1a)']]);
-  assert.ok(!bm.some((r) => r[1] === '41001' && /,51002|10030/.test(r[0])), 'other SKUs use no mailer');
-  // Counted units: 80090,80090 ×2, 80030 ×1, 80090 ×1 (the cancelled and refunded-unshipped 80090 lines don't count) = 4 mailers
+  const mailerRows = bm.filter((r) => r[1] === '41001').map((r) => [r[0], r[2], r[5]]).sort((a, b) => (a[0] < b[0] ? -1 : 1));
+  assert.deepEqual(plain(mailerRows), [['80030', 1, 'Mailer rule (Rule 8.1a)'], ['80030,51002', 1, 'Mailer rule (Rule 8.1a)'],
+    ['80090', 1, 'Mailer rule (Rule 8.1a)'], ['80090,80090', 1, 'Mailer rule (Rule 8.1a)']]);
+  assert.ok(!bm.some((r) => r[1] === '41001' && /^(10030|51002)$/.test(r[0])), 'kits and accessories alone use no mailer');
+  // Counted units: 80090,80090 ×2, 80030 ×1, 80090 ×1, 80030,51002 ×1 (the cancelled and refunded-unshipped 80090 lines don't count) = 5 mailers
   const r = findRow(T.variance, 'ADS', '41001');
-  assert.deepEqual(['E', 'F', 'G', 'H', 'I', 'J'].map((c) => val(T.variance, r, c)), [20, 0, 4, 16, 16, 0]);
+  assert.deepEqual(['E', 'F', 'G', 'H', 'I', 'J'].map((c) => val(T.variance, r, c)), [20, 0, 5, 15, 16, 1]);
+  // Which SKUs use a mailer: pouch bundles yes (one per bundle, however many pouches), jar bundles and plain accessories no.
+  const uses = (s) => L.usesMailer_(s);
+  assert.deepEqual(['80030', '80090,80090,80090', '50005,80030', '80030,80030,51002', '80090,51003', '20001,20002', '51002', '10030', '50001,51002']
+    .map(uses), [true, true, true, true, true, false, false, false, false]);
 });
 
 test('Rule 6.2: COGS in the new layout (no Trim); a SKU stored as a number still finds its cost', () => {

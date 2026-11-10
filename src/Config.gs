@@ -112,9 +112,11 @@ var CONFIG = {
   },
 
   // ---- Rule 8.1a: mailers used when ADS ships these Shopify SKUs --------------
-  // Each unit sold of a SKU in `soldSkus` (the exact Shopify SKU text) uses `perUnit` of `sku`.
+  // Each unit sold of a SKU in `soldSkus` (the exact Shopify SKU text) uses `perUnit` of `sku`, and so does
+  // each unit sold of any bundle SKU (has a comma) with a pouch from `bundlePouches` in it — one mailer per
+  // bundle, not per pouch (owner, 2026-11-10). Jar bundles (20001,20002) have no pouch → no mailer.
   // Shopify only: manualorder_log shipments use no mailer (owner, 2026-11-10).
-  MAILER_RULE: { sku: '41001', perUnit: 1, soldSkus: ['80030', '80090', '80090,80090', '80090,80090,80090'] },
+  MAILER_RULE: { sku: '41001', perUnit: 1, soldSkus: ['80030', '80090', '80090,80090', '80090,80090,80090'], bundlePouches: ['80030', '80090'] },
 
   // ---- Rule 5.5: work-order lines that are fees, not kits ---------------------
   WORK_ORDER_FEE_JOBS: ['Setup Fee'],

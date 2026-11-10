@@ -116,9 +116,11 @@ var CONFIG = {
   },
 
   // ---- Rule 8.1a: mailers used when ADS ships these Shopify SKUs --------------
-  // Each unit sold of a SKU in `soldSkus` (the exact Shopify SKU text) uses `perUnit` of `sku`.
+  // Each unit sold of a SKU in `soldSkus` (the exact Shopify SKU text) uses `perUnit` of `sku`, and so does
+  // each unit sold of any bundle SKU (has a comma) with a pouch from `bundlePouches` in it — one mailer per
+  // bundle, not per pouch (owner, 2026-11-10). Jar bundles (20001,20002) have no pouch → no mailer.
   // Shopify only: manualorder_log shipments use no mailer (owner, 2026-11-10).
-  MAILER_RULE: { sku: '41001', perUnit: 1, soldSkus: ['80030', '80090', '80090,80090', '80090,80090,80090'] },
+  MAILER_RULE: { sku: '41001', perUnit: 1, soldSkus: ['80030', '80090', '80090,80090', '80090,80090,80090'], bundlePouches: ['80030', '80090'] },
 
   // ---- Rule 5.5: work-order lines that are fees, not kits ---------------------
   WORK_ORDER_FEE_JOBS: ['Setup Fee'],
@@ -997,6 +999,13 @@ function lookupMap_(rows, colIdx, value) {
 // Rule 8.1: Shopify bundle SKUs ("80090,80090" -> 80090 x 2)
 // ---------------------------------------------------------------------------
 
+/** Rule 8.1a: does one unit sold of this Shopify SKU use a mailer? Listed SKUs, plus any bundle containing a pouch. */
+function usesMailer_(sku) {
+  var mr = CONFIG.MAILER_RULE;
+  if (mr.soldSkus.indexOf(sku) >= 0) return true;
+  return String(sku).indexOf(',') >= 0 && splitBundle_(sku).some(function (p) { return mr.bundlePouches.indexOf(p.sku) >= 0; });
+}
+
 function splitBundle_(sku) {
   var counts = {}, order = [];
   String(sku).split(',').forEach(function (p) {
@@ -1730,7 +1739,7 @@ function bundleMapModel_(name, soldSkus, tabs, shop) {
   // Rule 8.1a: mailer rows, after the bundle rows.
   var mr = CONFIG.MAILER_RULE;
   soldSkus.forEach(function (sold) {
-    if (mr.soldSkus.indexOf(sold) >= 0) add(sold, mr.sku, mr.perUnit, 'Mailer rule (Rule 8.1a)');
+    if (usesMailer_(sold)) add(sold, mr.sku, mr.perUnit, 'Mailer rule (Rule 8.1a)');
   });
   return model_(name, values, { textCols: [0, 1], numberFormats: { 2: '0', 3: '#,##0', 4: '#,##0' }, tabColor: TAB_COLORS.helper });
 }
@@ -2342,7 +2351,7 @@ function buildWorkbookModel_(inputs) {
   var shopSkus = uniqueSorted_(col(inputs.shopify, C.SHOPIFY.sku).filter(function (_, i) { return shopCounted[i]; }));
   var bundleComponents = [];
   shopSkus.forEach(function (s) { splitBundle_(s).forEach(function (p) { bundleComponents.push(p.sku); }); });
-  if (shopSkus.some(function (s) { return CONFIG.MAILER_RULE.soldSkus.indexOf(s) >= 0; })) bundleComponents.push(CONFIG.MAILER_RULE.sku); // Rule 8.1a
+  if (shopSkus.some(usesMailer_)) bundleComponents.push(CONFIG.MAILER_RULE.sku); // Rule 8.1a
   var kitParents = uniqueSorted_(wo.lines.filter(function (l) { return Number(l.pieces) > 0 && l.sku !== ''; }).map(function (l) { return l.sku; }));
   var manualLogSkus = inputs.manualLog.rows.map(function (r) { return r[2]; });
   var amzLogSkus = inputs.amzLog.rows.map(function (r) { return r[2]; });
