@@ -22,7 +22,13 @@ The owner is non-technical: explain in plain English, never ask them to review c
 - `src/Sheets.gs` — writing sheet models to Google Sheets.
 - `dist/` — exactly what clasp uploads to Apps Script: `DairyPill_EOM.gs` (generated bundle) + `appsscript.json` (copied). Never edit by hand (`npm run bundle`; a test fails if stale).
 - `.clasp.json` — Apps Script project (owned by the DairyPill account), `rootDir: dist`.
-- `.github/workflows/deploy-apps-script.yml` — on every push (any branch): `npm test`, check `dist/` is fresh, `clasp push`. Needs repo secret `CLASPRC_JSON` (SETUP.md §A.2).
+- `.github/workflows/deploy-apps-script.yml` — on every push **to `main`**: `npm test`, check `dist/` is fresh, `clasp push`. Needs repo secret `CLASPRC_JSON` (SETUP.md §A.2). Pushes to other branches never upload.
+
+## Branches — one branch: `main` (owner's decision, 2026-11-10)
+- The owner is the only editor. All work ends up on `main`; `main` is what is live in Apps Script.
+- The owner has given standing permission to push to `main`. A session that starts on its own `claude/…` branch: do the work there, run `npm test` + `npm run bundle`, then `git push origin HEAD:main` (fast-forward; if main moved, rebase first — never force-push main), then delete the session branch on GitHub. Don't leave extra branches behind.
+- After pushing, **check the "Deploy to Apps Script" run on main went green** (GitHub Actions) before telling the owner it is live. A red run with "invalid_grant" = the saved Google sign-in expired: owner reruns `npx @google/clasp@2.4.2 login`, `pbcopy < ~/.clasprc.json`, updates the `CLASPRC_JSON` secret, then re-run the job.
+- Old unmerged work is kept as tags, not branches: `archive/wo-log-rule-5.7` (writing kit lines to the Ops Hub wo_log — never adopted), `archive/workspace-studio` (retired), `archive/ops-logs-first-draft` (superseded by the current Ops Hub log reading).
 - `test/` — `formulaEngine.js` calculates the generated formulas; `gasMock.js` is an in-memory Drive/Sheets so `e2e.test.js` runs the real entry points.
 - `tools/replay.js <folder>` — replays a real month from local CSV exports and compares with the hand-built report (data is never committed).
 

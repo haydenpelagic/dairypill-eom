@@ -24,7 +24,8 @@ The code is **not pasted by hand**. Every time Claude Code pushes a change to Gi
 
 Good to know:
 - The upload **replaces everything** in that Apps Script project. Don't edit code in the Apps Script editor — it's overwritten on the next upload. Ask Claude Code instead.
-- Any branch Claude pushes goes live once its tests pass. Change the script from **one Claude session at a time**, or the last one to push wins.
+- Only the **main** branch goes live (once its tests pass). Change the script from **one Claude session at a time**.
+- If an upload goes red with **invalid_grant**, the saved sign-in expired: redo steps 3–5 above (in step 5, click the pencil on the existing `CLASPRC_JSON` secret and paste over it), then **Re-run jobs** on the red run.
 - To cut GitHub's access: Google Account → Security → Third-party connections → remove **clasp**, then delete the secret.
 - Backup (only on your Mac, with clasp signed in): `npm run deploy` runs the tests, rebuilds and uploads.
 
