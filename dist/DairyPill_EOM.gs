@@ -114,6 +114,7 @@ var CONFIG = {
 
   // ---- Rule 8.1a: mailers used when ADS ships these Shopify SKUs --------------
   // Each unit sold of a SKU in `soldSkus` (the exact Shopify SKU text) uses `perUnit` of `sku`.
+  // Shopify only: manualorder_log shipments use no mailer (owner, 2026-11-10).
   MAILER_RULE: { sku: '41001', perUnit: 1, soldSkus: ['80030', '80090', '80090,80090', '80090,80090,80090'] },
 
   // ---- Rule 5.5: work-order lines that are fees, not kits ---------------------
