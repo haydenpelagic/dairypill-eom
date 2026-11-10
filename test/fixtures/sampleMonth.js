@@ -108,6 +108,9 @@ function sampleRaw(year, monthIndex) {
   const cogsRows = [cogs('10030', 6.76, 0.08, 0.35), cogs('80030', 2.60, 0.01, 0.35), cogs('80090', 5.78, 0.08, 1.04), cogs('51002', 0.45, 0, 0),
     cogs('50001', 2.10, 0, 0), cogs('20001', 0.59, 0.05, 0), cogs('A0030', 2.52, 0, 0.35), cogs('70003', 147, 0, 50.96),
     cogs('80090,80090', 11.56, 0.16, 2.08), cogs('80030,51002', 3.05, 0.01, 0.35), cogs('41001', 0.32, 0, 0)]; // A80004 deliberately missing
+  // Descriptions as typed on COGS (Outbound Summary reads them, rule 11.2); 50001 left blank on purpose.
+  const cogsDescs = { '10030': '10ct Pouch', '80090,80090': '90ct Pouch x2' };
+  cogsRows.forEach((r) => { if (cogsDescs[r[0]]) r[1] = cogsDescs[r[0]]; });
   const yyyymm = year + '-' + String(monthIndex + 1).padStart(2, '0');
   const woHtml = fs.readFileSync(path.join(__dirname, 'workorders_sample.html'), 'utf8').replace(/2026-09/g, yyyymm);
   return { adsStart, adsEnd, amzStart, ledger, biz, shopify, manualLog, amzLog, bomValues, cogsHeader: COGS_HEADER, cogsRows, woHtml };

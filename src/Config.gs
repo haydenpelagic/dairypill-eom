@@ -59,7 +59,7 @@ var CONFIG = {
   // Rule 6.2: COGS is typed by hand every month. The script creates it with these headers, one row per SKU,
   // costs blank, and Total / Unit = sum of the three cost columns. SKUs match as text or numbers (no Trim column).
   COGS_HEADER: ['SKU', 'Description', 'Base Cost', 'Freight In', 'Tariff', 'Total / Unit'],
-  COGS_COLUMNS: { key: 'SKU', cogs: 'Base Cost', freight: 'Freight In', tariffs: 'Tariff', total: 'Total / Unit' },
+  COGS_COLUMNS: { key: 'SKU', desc: 'Description', cogs: 'Base Cost', freight: 'Freight In', tariffs: 'Tariff', total: 'Total / Unit' },
 
   // ---- Rule 2: how each raw file is recognized (by its header row) ------------
   FILE_TYPES: {

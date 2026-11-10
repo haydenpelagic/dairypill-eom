@@ -145,7 +145,8 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
 ## 11. Outbound Summary
 
 - **11.1** One row per SKU sold: every Shopify SKU (bundles kept whole, e.g. `80090,80090`), every `manualorder_log` SKU shipped in the month, every Amazon SKU with ledger Customer Shipments. Only counted Shopify lines (rule 5.4a). A TOTAL row adds the rows above it.
-- **11.2** Columns: SKU | Avg Cost | then *Units* and *Total Cost* for DTC, Marketing, CX, TikTok, Samples, Amazon, All Channels. The channel names in row 3 drive the formulas. Each channel = Shopify lines with that Channel (rule 5.4) + `manualorder_log` rows with that Channel shipped in the month. Shopify never produces Samples ("free sample" tags stay Marketing). Amazon = ledger *Customer Shipments*; `amz_log` units are not sales.
+- **11.2** Columns: SKU | Description | Avg Cost | then *Units* and *Total Cost* for DTC, Marketing, CX, TikTok, Samples, Amazon, All Channels. The channel names in row 3 drive the formulas. Each channel = Shopify lines with that Channel (rule 5.4) + `manualorder_log` rows with that Channel shipped in the month. Shopify never produces Samples ("free sample" tags stay Marketing). Amazon = ledger *Customer Shipments*; `amz_log` units are not sales.
+- **11.3** *Description* is looked up on this month's **COGS** tab (its Description column, SKU matched as text or as a number, INDEX/MATCH — no XLOOKUP, rule 9.5). Edit a description on COGS and Outbound Summary follows without a rerun. A SKU not on COGS, or with a blank description there, shows "(no description)".
 
 ## 12. Checks tab
 

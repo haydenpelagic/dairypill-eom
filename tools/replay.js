@@ -93,7 +93,7 @@ console.log('\nOUTBOUND units (new | old): DTC, Marketing, CX, TikTok, Amazon');
 const orows = [];
 for (const r of ob.slice(4)) {
   if (!r[0]) continue;
-  const n = [r[2], r[4], r[6], r[8], r[10]];
+  const n = [r[3], r[5], r[7], r[9], r[11]];
   const o = oldOb[r[0]] ? [2, 4, 6, 8, 10].map((i) => num(oldOb[r[0]][i])) : null;
   orows.push({ sku: r[0], new: n.join(' / '), old: o ? o.join(' / ') : '-', same: o && n.every((x, i) => x === o[i]) ? '' : '≠' });
 }

@@ -145,7 +145,7 @@ test('Rule 10: valuation totals box', () => {
 
 test('Rule 11: outbound units by channel (order-level tags, manualorder_log channels incl. Samples, Amazon)', () => {
   const row = (sku) => findRow(T.outbound, sku);
-  const U = ['C', 'E', 'G', 'I', 'K', 'M', 'O']; // DTC, Mktg, CX, TikTok, Samples, Amazon, All
+  const U = ['D', 'F', 'H', 'J', 'L', 'N', 'P']; // DTC, Mktg, CX, TikTok, Samples, Amazon, All
   assert.deepEqual(plain(sheet(T.outbound).values[2].filter((x) => x)), ['DTC', 'Marketing', 'CX', 'TikTok', 'Samples', 'Amazon', 'All Channels']);
   const units = (sku) => U.map((c) => val(T.outbound, row(sku), c));
   assert.deepEqual(units('10030'), [3, 0, 0, 0, 0, 0, 3]);
@@ -157,7 +157,14 @@ test('Rule 11: outbound units by channel (order-level tags, manualorder_log chan
   assert.deepEqual(units('A0030'), [0, 0, 0, 0, 0, 20, 20]);         // the 15 in amz_log are not sales
   const total = findRow(T.outbound, 'TOTAL');
   assert.deepEqual(U.map((c) => val(T.outbound, total, c)), [5, 3, 2, 1, 1, 25, 37]);
-  close(val(T.outbound, row('80090,80090'), 'D'), 2 * 13.80);
+  close(val(T.outbound, row('80090,80090'), 'E'), 2 * 13.80);
+  assert.deepEqual(plain(sheet(T.outbound).values[3].slice(0, 3)), ['SKU', 'Description', 'Avg Cost / Unit']);
+  // Description is looked up on the COGS tab (INDEX/MATCH, Excel-safe) — same text as COGS column B.
+  assert.equal(val(T.outbound, row('10030'), 'B'), '10ct Pouch');
+  assert.equal(val(T.outbound, row('80090,80090'), 'B'), '90ct Pouch x2');
+  assert.equal(val(T.outbound, row('50001'), 'B'), '(no description)');   // blank on COGS
+  assert.equal(val(T.outbound, row('A80004'), 'B'), '(no description)');  // not on COGS at all
+  assert.match(sheet(T.outbound).values[row('10030') - 1][1], /^=IFERROR\(IF\(INDEX\('COGS'!/);
 });
 
 test('Rule 12: checks flag what is wrong and pass what is right', () => {
@@ -390,7 +397,7 @@ test('Rule 8.1a: one 41001 mailer per unit sold of 80030 / 80090 / 80090,80090 /
 
 test('Rule 6.2: COGS in the new layout (no Trim); a SKU stored as a number still finds its cost', () => {
   const inputs = sampleInputs(L);
-  inputs.cogs = { header: inputs.cogs.header, rows: inputs.cogs.rows.map((r) => (r[0] === '80090' ? [80090].concat(r.slice(1)) : r)) };
+  inputs.cogs = { header: inputs.cogs.header, rows: inputs.cogs.rows.map((r) => (r[0] === '80090' ? [80090, '90ct Pouch'].concat(r.slice(2)) : r)) };
   const b = L.buildWorkbookModel_(inputs);
   const w = workbookFromModels(b.sheets);
   const v = b.sheets.find((s) => s.name === b.tabs.variance).values;
@@ -400,6 +407,9 @@ test('Rule 6.2: COGS in the new layout (no Trim); a SKU stored as a number still
   assert.equal(w.value(b.tabs.variance, a8, 11), 'NO COST', 'a SKU with letters and no COGS row is still NO COST');
   assert.ok(!b.sheets.find((s) => s.name === b.tabs.checks).values.find((x) => x[1] === 'SKUs with no COGS cost')[3].includes('80090,'),
     'Checks does not list 80090 as missing');
+  // Rule 11.2: the Outbound description lookup matches a number SKU the same way.
+  const ob = b.sheets.find((s) => s.name === b.tabs.outbound).values;
+  assert.equal(w.value(b.tabs.outbound, ob.findIndex((x) => x[0] === '80090') + 1, 2), '90ct Pouch');
 });
 
 test('Rule 6.2: with no COGS tab yet, a blank one is created — every SKU, costs empty, Total = sum; blanks show NO COST until typed', () => {

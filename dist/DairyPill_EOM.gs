@@ -63,7 +63,7 @@ var CONFIG = {
   // Rule 6.2: COGS is typed by hand every month. The script creates it with these headers, one row per SKU,
   // costs blank, and Total / Unit = sum of the three cost columns. SKUs match as text or numbers (no Trim column).
   COGS_HEADER: ['SKU', 'Description', 'Base Cost', 'Freight In', 'Tariff', 'Total / Unit'],
-  COGS_COLUMNS: { key: 'SKU', cogs: 'Base Cost', freight: 'Freight In', tariffs: 'Tariff', total: 'Total / Unit' },
+  COGS_COLUMNS: { key: 'SKU', desc: 'Description', cogs: 'Base Cost', freight: 'Freight In', tariffs: 'Tariff', total: 'Total / Unit' },
 
   // ---- Rule 2: how each raw file is recognized (by its header row) ------------
   FILE_TYPES: {
@@ -1773,6 +1773,14 @@ function costLookup_(ctx, which, skuCell) {
   return '=IFERROR(' + num(byText) + ',IFERROR(' + num(byNumber) + ',' + q_(CONFIG.NO_COST_TEXT) + '))';
 }
 
+/** Rule 11.2: description typed on the COGS tab (SKU matched as text, then as a number; blank → "(no description)"). */
+function cogsDescLookup_(ctx, skuCell) {
+  var val = colRef_(ctx.tabs.cogs, ctx.cogs.desc), key = colRef_(ctx.tabs.cogs, ctx.cogs.key);
+  var nonBlank = function (x) { return 'IF(' + x + '&""="",0/0,' + x + '&"")'; };
+  return '=IFERROR(' + nonBlank('INDEX(' + val + ',MATCH(' + skuCell + ',' + key + ',0))') +
+    ',IFERROR(' + nonBlank('INDEX(' + val + ',MATCH(' + skuCell + '*1,' + key + ',0))') + ',' + q_(CONFIG.NO_DESCRIPTION_TEXT) + '))';
+}
+
 function descLookup_(ctx, skuCell) {
   return '=IFERROR(INDEX(' + colRef_(ctx.tabs.skuList, 'B') + ',MATCH(' + skuCell + ',' + colRef_(ctx.tabs.skuList, 'A') +
     ',0)),' + q_(CONFIG.NO_DESCRIPTION_TEXT) + ')';
@@ -1988,29 +1996,29 @@ function outboundModel_(ctx, skus) {
   var t = ctx.tabs, c = ctx.cols;
   var channels = CONFIG.OUTBOUND_CHANNELS;
   var groups = channels.concat([CONFIG.AMAZON_CHANNEL_LABEL, 'All Channels']);
-  var row3 = ['', ''], row4 = ['SKU', 'Avg Cost / Unit'];
+  var row3 = ['', '', ''], row4 = ['SKU', 'Description', 'Avg Cost / Unit'];
   groups.forEach(function (g) { row3.push(g, ''); row4.push('Units', 'Total Cost'); });
   var values = [
     ['Outbound Summary — ' + ctx.month.label],
-    ['Units by channel; one row per SKU sold (Shopify bundles kept whole). Channel names in row 3 drive the formulas. Each channel = Shopify orders + Ops Hub ' + CONFIG.OPS_HUB.manualLog.sheetName + ' rows with that Channel (Samples comes only from the log). Amazon = ledger Customer Shipments; ' + CONFIG.OPS_HUB.amzLog.sheetName + ' units are not sales.'],
+    ['Units by channel; one row per SKU sold (Shopify bundles kept whole). Description comes from the COGS tab. Channel names in row 3 drive the formulas. Each channel = Shopify orders + Ops Hub ' + CONFIG.OPS_HUB.manualLog.sheetName + ' rows with that Channel (Samples comes only from the log). Amazon = ledger Customer Shipments; ' + CONFIG.OPS_HUB.amzLog.sheetName + ' units are not sales.'],
     row3, row4
   ];
   var first = values.length + 1;
   skus.forEach(function (sku) {
     var r = values.length + 1;
-    var row = [sku, costLookup_(ctx, 'total', '$A' + r)];
+    var row = [sku, cogsDescLookup_(ctx, '$A' + r), costLookup_(ctx, 'total', '$A' + r)];
     var unitCols = [];
     channels.forEach(function (ch, j) {
-      var u = colLetter_(3 + 2 * j);
+      var u = colLetter_(4 + 2 * j);
       var f = '=SUMIFS(' + colRef_(t.shopify, c.shop.qty) + ',' + colRef_(t.shopify, c.shop.sku) + ',$A' + r + ',' +
         colRef_(t.shopify, c.shop.channel) + ',' + u + '$3)' +
         '+SUMIFS(' + colRef_(t.manualLog, 'D') + ',' + colRef_(t.manualLog, 'C') + ',$A' + r + ',' + colRef_(t.manualLog, 'B') + ',' + u + '$3)';
-      row.push(f, '=IF(' + u + r + '=0,0,IFERROR(' + u + r + '*$B' + r + ',' + q_(CONFIG.NO_COST_TEXT) + '))');
+      row.push(f, '=IF(' + u + r + '=0,0,IFERROR(' + u + r + '*$C' + r + ',' + q_(CONFIG.NO_COST_TEXT) + '))');
       unitCols.push(u);
     });
-    var au = colLetter_(3 + 2 * channels.length);
+    var au = colLetter_(4 + 2 * channels.length);
     row.push('=0-SUMIFS(' + colRef_(t.ledger, c.ledger.shipments) + ',' + colRef_(t.ledger, c.ledger.mapped) + ',$A' + r + ')',
-      '=IF(' + au + r + '=0,0,IFERROR(' + au + r + '*$B' + r + ',' + q_(CONFIG.NO_COST_TEXT) + '))');
+      '=IF(' + au + r + '=0,0,IFERROR(' + au + r + '*$C' + r + ',' + q_(CONFIG.NO_COST_TEXT) + '))');
     unitCols.push(au);
     var costCols = unitCols.map(function (u) { return colLetter_(columnNumber_(u) + 1); });
     row.push('=' + unitCols.map(function (u) { return u + r; }).join('+'),
@@ -2018,14 +2026,14 @@ function outboundModel_(ctx, skus) {
     values.push(row);
   });
   var last = values.length;
-  var total = ['TOTAL', ''];
-  for (var k = 3; k <= 2 + 2 * groups.length; k++) {
+  var total = ['TOTAL', '', ''];
+  for (var k = 4; k <= 3 + 2 * groups.length; k++) {
     var L = colLetter_(k);
     total.push(last >= first ? '=SUM(' + L + first + ':' + L + last + ')' : 0);
   }
   values.push(total);
-  var nf = { 1: '$#,##0.00' };
-  for (var g = 0; g < groups.length; g++) { nf[2 + 2 * g] = '#,##0'; nf[3 + 2 * g] = '$#,##0.00'; }
+  var nf = { 2: '$#,##0.00' };
+  for (var g = 0; g < groups.length; g++) { nf[3 + 2 * g] = '#,##0'; nf[4 + 2 * g] = '$#,##0.00'; }
   return model_(t.outbound, values, {
     textCols: [0], textFromRow: 5, numberFormats: nf, numberFromRow: 5,
     headerRows: [3, 4], titleRows: [1], subtotalRows: [values.length], frozenRows: 4, tabColor: TAB_COLORS.summary
@@ -2052,7 +2060,7 @@ function checksModel_(ctx, info) {
   var rows = [['#', 'Check', 'Result', 'Details']];
   function add(rule, check, result, details) { rows.push([rule, check, result, details || '']); }
 
-  var noCost = 'COUNTIF(' + colRef_(t.variance, 'K') + ',' + NC + ')+COUNTIF(' + colRef_(t.outbound, 'B') + ',' + NC + ')';
+  var noCost = 'COUNTIF(' + colRef_(t.variance, 'K') + ',' + NC + ')+COUNTIF(' + colRef_(t.outbound, 'C') + ',' + NC + ')';
   add('12.1', 'SKUs with no COGS cost', flagIf_('(' + noCost + ')', 'cells show "' + CONFIG.NO_COST_TEXT + '" — add these SKUs to the COGS tab'),
     (info.cogsCreated ? 'COGS was created this run with every SKU and blank costs — type Base Cost, Freight In and Tariff; the NO COST cells clear as you type (no rerun). ' : '') +
     (info.noCostSkus.length ? 'Not on COGS (add a row): ' + info.noCostSkus.join(', ') : 'Every SKU has a COGS row.'));
