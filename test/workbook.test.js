@@ -433,3 +433,36 @@ test('Rule 6.2: with no COGS tab yet, a blank one is created — every SKU, cost
   w = workbookFromModels(b.sheets.map((s) => (s === cogs ? Object.assign({}, s, { values: typed }) : s)));
   close(w.value(b.tabs.variance, r, 11), 6.9);
 });
+
+test('Rule 11.2a: a bundle with no COGS cost is costed from its parts; its own COGS cost wins when above $0', () => {
+  const inputs = sampleInputs(L);
+  // Two more Shopify bundles: one whose parts are all on COGS, one with a part (A80004) that has no COGS row.
+  const sh = inputs.shopify, skuIx = sh.header.indexOf('Lineitem sku');
+  const tin = sh.rows.find((r) => r[skuIx] === '80030,51002');
+  const nameIx = sh.header.indexOf('Name');
+  const line = (order, sku) => tin.map((x, i) => (i === skuIx ? sku : i === nameIx ? order : x));
+  sh.rows.push(line('#90', '80030,80030,51002'), line('#91', '80030,A80004'));
+  // 80030,51002 has no COGS row; 80090,80090's Total was typed as $0.
+  inputs.cogs = { header: inputs.cogs.header, rows: inputs.cogs.rows.filter((r) => r[0] !== '80030,51002')
+    .map((r) => (r[0] === '80090,80090' ? [r[0], r[1], 0, 0, 0, 0] : r)) };
+  const b = L.buildWorkbookModel_(inputs);
+  const w = workbookFromModels(b.sheets);
+  const ob = b.sheets.find((s) => s.name === b.tabs.outbound).values;
+  const cost = (sku) => w.value(b.tabs.outbound, ob.findIndex((x) => x[0] === sku) + 1, 3);
+  close(cost('80030,51002'), 2.96 + 0.45);         // parts: 80030 + 51002
+  close(cost('80030,80030,51002'), 2 * 2.96 + 0.45);
+  close(cost('80090,80090'), 2 * 6.90);            // own $0 → parts
+  assert.equal(cost('80030,A80004'), 'NO COST');   // a part has no cost
+  close(cost('80030'), 2.96);                       // plain SKUs unchanged
+  // Checks lists only the bundle whose part is missing.
+  const detail = b.sheets.find((s) => s.name === b.tabs.checks).values.find((x) => x[1] === 'SKUs with no COGS cost')[3];
+  assert.match(detail, /80030,A80004/);
+  assert.ok(!/80030,51002|80030,80030,51002/.test(detail), detail);
+  // Own COGS cost above $0 wins (sample month: 80090,80090 typed as 13.80; set 80030,51002 to 5.00).
+  const inputs2 = sampleInputs(L);
+  inputs2.cogs = { header: inputs2.cogs.header, rows: inputs2.cogs.rows.map((r) => (r[0] === '80030,51002' ? [r[0], '', 5, 0, 0, 5] : r)) };
+  const b2 = L.buildWorkbookModel_(inputs2), w2 = workbookFromModels(b2.sheets);
+  const ob2 = b2.sheets.find((s) => s.name === b2.tabs.outbound).values;
+  close(w2.value(b2.tabs.outbound, ob2.findIndex((x) => x[0] === '80030,51002') + 1, 3), 5);
+  assert.doesNotThrow(() => L.assertExcelSafe_(b.sheets));
+});

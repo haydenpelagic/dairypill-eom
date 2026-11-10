@@ -1140,6 +1140,31 @@ function costLookup_(ctx, which, skuCell) {
   return '=IFERROR(' + num(byText) + ',IFERROR(' + num(byNumber) + ',' + q_(CONFIG.NO_COST_TEXT) + '))';
 }
 
+/**
+ * Rule 11.2a: one SKU's COGS Total / Unit as a formula expression (no "=") that ERRORS when there is no number —
+ * SKU matched as text, then as a number. `skuExpr` is a cell ("$A5") or a quoted SKU ("\"80030\"").
+ * `positiveOnly`: a $0 Total also errors (a bundle never really costs $0, so its parts are used instead).
+ */
+function cogsTotalExpr_(ctx, skuExpr, positiveOnly) {
+  var val = colRef_(ctx.tabs.cogs, ctx.cogs.total), key = colRef_(ctx.tabs.cogs, ctx.cogs.key);
+  var num = function (x) { return 'IF(ISNUMBER(' + x + '),' + (positiveOnly ? 'IF(' + x + '>0,' + x + ',0/0)' : x) + ',0/0)'; };
+  return 'IFERROR(' + num('INDEX(' + val + ',MATCH(' + skuExpr + ',' + key + ',0))') + ',' +
+    num('INDEX(' + val + ',MATCH(' + skuExpr + '*1,' + key + ',0))') + ')';
+}
+
+/**
+ * Rule 11.2a: Outbound Summary Avg Cost / Unit. A plain SKU = its COGS Total / Unit (rule 6.2). A bundle SKU
+ * ("80030,51002") = its own COGS Total / Unit when that is above $0, otherwise the sum of its parts
+ * (split on commas exactly like the Bundle Map, rule 8.1: count × each part's COGS Total / Unit).
+ * Any part without a cost → NO COST.
+ */
+function outboundCostFormula_(ctx, sku, skuCell) {
+  var parts = splitBundle_(sku);
+  if (String(sku).indexOf(',') < 0 || !parts.length) return costLookup_(ctx, 'total', skuCell);
+  var sum = parts.map(function (p) { return (p.count === 1 ? '' : p.count + '*') + cogsTotalExpr_(ctx, q_(p.sku), false); }).join('+');
+  return '=IFERROR(' + cogsTotalExpr_(ctx, skuCell, true) + ',IFERROR(' + sum + ',' + q_(CONFIG.NO_COST_TEXT) + '))';
+}
+
 /** Rule 11.2: description typed on the COGS tab (SKU matched as text, then as a number; blank → "(no description)"). */
 function cogsDescLookup_(ctx, skuCell) {
   var val = colRef_(ctx.tabs.cogs, ctx.cogs.desc), key = colRef_(ctx.tabs.cogs, ctx.cogs.key);
@@ -1373,7 +1398,7 @@ function outboundModel_(ctx, skus) {
   var first = values.length + 1;
   skus.forEach(function (sku) {
     var r = values.length + 1;
-    var row = [sku, cogsDescLookup_(ctx, '$A' + r), costLookup_(ctx, 'total', '$A' + r)];
+    var row = [sku, cogsDescLookup_(ctx, '$A' + r), outboundCostFormula_(ctx, sku, '$A' + r)];
     var unitCols = [];
     channels.forEach(function (ch, j) {
       var u = colLetter_(4 + 2 * j);
@@ -1750,7 +1775,12 @@ function buildWorkbookModel_(inputs) {
   });
   var costedSkus = uniqueSorted_([].concat(adsSkus, amzSkus, outboundSkus, blocks.slice(2).reduce(function (a, b) { return a.concat(b.skus); }, [])));
   var info = {
-    noCostSkus: costedSkus.filter(function (s) { return !cogsKeys[s]; }),
+    // Rule 11.2a: a bundle not on COGS is costed from its parts (bundles only appear on Outbound Summary), so it is only listed when a part is missing too.
+    noCostSkus: costedSkus.filter(function (s) {
+      if (cogsKeys[s]) return false;
+      if (s.indexOf(',') < 0) return true;
+      return splitBundle_(s).some(function (p) { return !cogsKeys[p.sku]; });
+    }),
     cogsCreated: !inputs.cogs,
     noDescSkus: allSkus.filter(function (s) { return !descs.desc[s]; }),
     unmappedAsins: uniqueSorted_(unmappedAsins),
