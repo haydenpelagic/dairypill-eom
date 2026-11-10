@@ -4,7 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const ORDER = ['Config.gs', 'Main.gs', 'Studio.gs', 'Logic.gs', 'Sheets.gs'];
+const ORDER = ['Config.gs', 'Main.gs', 'Logic.gs', 'Sheets.gs'];
 
 function bundle() {
   const root = path.join(__dirname, '..');

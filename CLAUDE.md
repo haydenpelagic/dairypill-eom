@@ -7,8 +7,8 @@ The owner is non-technical: explain in plain English, never ask them to review c
 - The live script is the Apps Script project **"EOM Automation"** (`1RblqXtQ…`, `.clasp.json`), **owned by ops@dairypill.com**. hayden@pelagic.co is an editor. This is the ONLY deploy target — never change `.clasp.json` to another project.
 - The months folder **DairyPill › EOM Reports** (`16H9CC…`, `PARENT_FOLDER_ID`) lives in DairyPill's shared drive.
 - The old personal project **"DairyPill EOM"** (`1VY7Ejzw…`) is retired and in the trash. Never deploy to it, restore it, or point anything at it. A backup clone exists on the owner's Mac only.
-- Workspace Studio flows must be installed and created **as ops@dairypill.com** (they run as whoever created them). Result emails go to whoever runs the flow.
-- Anything that must run as DairyPill (installing the Studio test deployment, creating flows, approving permissions) is a human click in the DairyPill account — say so plainly; don't suggest moving anything back to a personal account to avoid it.
+- **How it runs:** someone opens EOM Automation in the Apps Script editor and presses **Run** on `buildEOM` / `shopifyOnly`. Workspace Studio was tried and **abandoned 2026-11-10** (it won't run from the DairyPill account) — don't re-add Studio steps, `addOns` in `appsscript.json`, or suggest Studio. The code is in git history (commit 400bafa) if the owner ever asks.
+- Anything that must be done as DairyPill (approving permissions, sharing) is a human click in that account — say so plainly; don't suggest moving anything back to a personal account to avoid it.
 
 ## Source of truth
 - `RULES.md` is the rule set. Every behaviour change starts there. Rule numbers are referenced in `src/Config.gs` and code comments.
@@ -18,8 +18,7 @@ The owner is non-technical: explain in plain English, never ask them to review c
 ## Layout
 - `src/Config.gs` — every setting (folder ID, channel rules, SKU renames, column names).
 - `src/Logic.gs` — pure functions: parsing, SKU lists, and every formula. No Google calls. All tested in Node.
-- `src/Main.gs` — entry points `buildEOM()` / `shopifyOnly()` (thin wrappers over `buildEOMFor_(month)` / `shopifyOnlyFor_(month)`), `preflight_`; Drive reading, starting balances.
-- `src/Studio.gs` — Workspace Studio steps (Rule 1.5), wired from `appsscript.json` → `addOns.flows`. Check quickly, queue a one-off trigger, build, email the result. Callback names in the manifest must match functions here (a test checks).
+- `src/Main.gs` — entry points `buildEOM()` / `shopifyOnly()` (thin wrappers over `buildEOMFor_(month)` / `shopifyOnlyFor_(month)`); Drive reading, starting balances.
 - `src/Sheets.gs` — writing sheet models to Google Sheets.
 - `dist/` — exactly what clasp uploads to Apps Script: `DairyPill_EOM.gs` (generated bundle) + `appsscript.json` (copied). Never edit by hand (`npm run bundle`; a test fails if stale).
 - `.clasp.json` — Apps Script project (owned by the DairyPill account), `rootDir: dist`.

@@ -61,13 +61,6 @@ Good to know:
 6. Run **buildEOM** again. Everything you typed in yellow tabs is kept; the summaries update.
 7. For accounting: **delete the Checks tab** (it's QC only; nothing points at it, and the next run rebuilds it), then **File → Download → Microsoft Excel (.xlsx)**.
 
-### From Workspace Studio (no script editor)
-The script adds two steps to Workspace Studio: **Build DairyPill EOM** and **Build DairyPill Shopify Sell Thru**. A flow is "Start manually" + one of these steps, with **Month** left blank (last month) or typed like the folder name (`October 2026`). The step checks the folder in a few seconds — if something's missing, the flow's activity log says what — then builds in the background and emails you the link (usually within 5 minutes). It always runs the latest code from GitHub.
-
-One-time setup, signed in as **ops@dairypill.com** (the account that owns the script). The old personal "DairyPill EOM" project is retired — a flow built on it no longer works and must be recreated here:
-1. Open the script (Apps Script project **EOM Automation**) → **Deploy → Test deployments** → **Install**.
-2. In Workspace Studio, create a flow: starter **Start manually**, step **Build DairyPill EOM** (and a second flow for **Build DairyPill Shopify Sell Thru** if you want it). Approve permissions on first run.
-
 ### Shopify only
 To make just the **DairyPill Sell Thru** file (replaces the old "DairyPill Monthly Sell Thru" script): choose **shopifyOnly** → **Run**. It uses the Shopify CSV in the month folder.
 

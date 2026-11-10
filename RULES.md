@@ -17,7 +17,7 @@ Claude Code should then update this file, `src/Config.gs` / `src/Logic.gs`, and 
 - **1.2** `buildEOM()` builds **last calendar month** by default. `MONTH_OVERRIDE` in `Config.gs` (e.g. `'September 2026'`) forces a month.
 - **1.3** The workbook `DAIRYPILL_EOM COGS - September 2026` is created in the month folder. If it already exists it is **rebuilt in place**: raw, helper and summary tabs are replaced; **manual tabs are never overwritten** (rule 7). Safe to run, fill in manual tabs, and run again.
 - **1.4** Anything missing or ambiguous **stops the run** with a plain-English message naming the file and the problem. No silent defaults.
-- **1.5** Workspace Studio steps **Build DairyPill EOM** and **Build DairyPill Shopify Sell Thru** take a Month (blank = last month). The step runs the rule 1.4 checks in a few seconds (problems show in the flow's activity log and nothing is changed), then builds in the background and **emails the person who ran the flow** the link or the problem. Only one build runs at a time; a second run while one is going is turned away with a message.
+- **1.5** Run it from the Apps Script editor (**buildEOM** / **shopifyOnly** → **Run**), signed in to an account that can open the EOM Reports folder. (Workspace Studio steps were tried and retired on 2026-11-10 — they can't run from the DairyPill account.)
 
 ## 2. Recognizing files (by their columns, never by file name)
 

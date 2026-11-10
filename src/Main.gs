@@ -2,8 +2,7 @@
 // DairyPill EOM Report — ENTRY POINTS
 //   buildEOM()    builds (or rebuilds) the month's EOM workbook      (Rules 1–12)
 //   shopifyOnly() makes only the standalone Shopify Sell Thru file   (Rule 13)
-// Pick the function in the toolbar dropdown and press Run — or start it from a
-// Workspace Studio flow (Studio.gs, Rule 1.5).
+// Pick the function in the toolbar dropdown and press Run.
 // =============================================================================
 
 function buildEOM() {
@@ -32,8 +31,11 @@ function buildEOMFor_(monthText) {
   // Read and check every raw file BEFORE changing anything in Drive (Rule 1.4).
   var shopifyTable = tableFromEntry_(e.SHOPIFY, 'Shopify order export');
   checkShopifyOrdersContiguous_(shopifyTable);
+  shopifyLinesCounted_(shopifyTable);                      // Rule 5.4a: status columns present
   var ledgerTable = tableFromEntry_(e.LEDGER, 'Amazon Inventory Ledger');
   checkLedgerCoversMonth_(ledgerTable, m);
+  var manualTable = tableFromEntry_(e.MANUAL, 'Manual Orders file');
+  manualRowsInMonth_(manualTable, m);                      // Rule 5.6: every row has a readable DATE
   var inputs = {
     month: m,
     todayStr: Utilities.formatDate(startedAt, Session.getScriptTimeZone(), 'yyyy-MM-dd'),
@@ -42,7 +44,7 @@ function buildEOMFor_(monthText) {
     ledger: ledgerTable,
     biz: tableFromEntry_(e.BIZ, 'Amazon Business Report'),
     shopify: shopifyTable,
-    manual: tableFromEntry_(e.MANUAL, 'Manual Orders file'),
+    manual: manualTable,
     workOrders: parseWorkOrdersHtml_(e.WORK_ORDERS.text, m),
     ignoredFiles: scan.ignored
   };
@@ -122,35 +124,14 @@ function shopifyOnlyFor_(monthText) {
   var scan = scanFolder_(monthFolder, m);
   requireOneOfEach_(scan, ['SHOPIFY'], m.label);
   var entry = scan.byType.SHOPIFY[0];
+  var table = tableFromEntry_(entry, 'Shopify order export'); // check before changing anything (Rule 1.4)
+  checkShopifyOrdersContiguous_(table);
+  shopifyLinesCounted_(table);
   renameEntry_(entry, tabNames_(m).shopify);
   var sell = ensureSellThru_(monthFolder, m, entry, true);
   var url = SpreadsheetApp.openById(sell.id).getUrl();
   log_('Done: ' + url);
   return url;
-}
-
-/**
- * Rule 1.4 / 1.5: the quick checks a Studio flow runs before queuing a build — month, folder,
- * one of each file, starting balances. Reads only; changes nothing. Returns the month label.
- */
-function preflight_(kind, monthText) {
-  var m = resolveMonth_(monthText, new Date());
-  var parent = parentFolder_();
-  var monthFolder = subfolder_(parent, m.label, true);
-  var scan = scanFolder_(monthFolder, m);
-  if (kind === 'SHOPIFY') {
-    requireOneOfEach_(scan, ['SHOPIFY'], m.label);
-  } else {
-    requireOneOfEach_(scan, ['ADS', 'LEDGER', 'BIZ', 'SHOPIFY', 'MANUAL', 'WORK_ORDERS'], m.label);
-    checkLedgerCoversMonth_(tableFromEntry_(scan.byType.LEDGER[0], 'Amazon Inventory Ledger'), m);     // Rule 5.2
-    manualRowsInMonth_(tableFromEntry_(scan.byType.MANUAL[0], 'Manual Orders file'), m);               // Rule 5.6
-    findStartingBalances_(parent, monthFolder, m);
-  }
-  // Rule 5.4 / 5.4a: order lines together, and the status columns needed to skip cancelled/refunded lines.
-  var shop = tableFromEntry_(scan.byType.SHOPIFY[0], 'Shopify order export');
-  checkShopifyOrdersContiguous_(shop);
-  shopifyLinesCounted_(shop);
-  return { label: m.label };
 }
 
 // -----------------------------------------------------------------------------

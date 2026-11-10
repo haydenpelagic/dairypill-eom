@@ -272,3 +272,24 @@ test('a Sell Thru file from an older script version is rebuilt, not reused', () 
   assert.equal(c.sellThruIsCurrent_(old.file), false);
   assert.equal(c.sellThruIsCurrent_(cur.file), true);
 });
+
+test('an undated Manual Orders row or a Shopify export without status columns stops the run before anything in Drive changes', () => {
+  const mar = parent.createFolder('March 2027');
+  const raw = sampleRaw(2027, 2);
+  raw.manual = raw.manual.concat([['MANUAL', '150', '50001', '1', '']]);
+  putMonthFiles(mar, raw, { boot: true });
+  ctx.CONFIG.MONTH_OVERRIDE = 'March 2027';
+  const before = names(mar);
+  assert.throws(() => ctx.buildEOM(), /Manual Orders row 6 \(SKU 50001\) has no DATE/);
+  assert.deepEqual(names(mar), before, 'nothing renamed, copied or created');
+
+  const apr = parent.createFolder('April 2027');
+  const raw2 = sampleRaw(2027, 3);
+  raw2.shopify = raw2.shopify.map((r) => r.slice(0, 9)); // no Cancelled at / Lineitem fulfillment status
+  putMonthFiles(apr, raw2, { boot: true });
+  ctx.CONFIG.MONTH_OVERRIDE = 'April 2027';
+  const before2 = names(apr);
+  assert.throws(() => ctx.buildEOM(), /missing the column "Cancelled at"/);
+  assert.throws(() => ctx.shopifyOnly(), /missing the column "Cancelled at"/);
+  assert.deepEqual(names(apr), before2, 'nothing renamed or created');
+});
