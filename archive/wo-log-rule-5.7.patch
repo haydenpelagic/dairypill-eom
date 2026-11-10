@@ -1,0 +1,657 @@
+From ec71fa6f156f934e8d02e31ae8fffe09424072b6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 29 Oct 2026 15:44:41 +0000
+Subject: [PATCH] Write each month's ADS kit lines into the Ops Hub wo_log
+ (rule 5.7)
+
+buildEOM now fills wo_log columns Date, Quantity, SKU and Cost (A, B, C, G)
+from the work-order report's kit lines. Rows dated in the month are replaced,
+so re-runs never double them; other months and columns D-F are untouched.
+Validated before any change; written after the workbook; result on Checks.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YYyzHyH9hAA9uDZFA3jgVs
+---
+ RULES.md              |   5 ++
+ SETUP.md              |   2 +
+ dist/DairyPill_EOM.gs | 165 ++++++++++++++++++++++++++++++++++++++++++
+ src/Config.gs         |  10 +++
+ src/Logic.gs          | 113 +++++++++++++++++++++++++++++
+ src/Main.gs           |  42 +++++++++++
+ test/e2e.test.js      |  47 +++++++++++-
+ test/gasMock.js       |   1 +
+ test/logic.test.js    |  34 +++++++++
+ 9 files changed, 417 insertions(+), 2 deletions(-)
+
+diff --git a/RULES.md b/RULES.md
+index 133cb21..c21d8a1 100644
+--- a/RULES.md
++++ b/RULES.md
+@@ -71,6 +71,10 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
+   The run stops if one order's lines are not next to each other in the file.
+ - **5.5 Work orders:** one row per kit line (Work Order, Date, SKU from the *Job* column, Pieces). "Setup Fee" lines are dropped; the *Description* text is ignored (it is sometimes wrong). The run stops if the line amounts don't add up to the report's TOTAL, or if the report is for a different month. Quantities only — labor dollars are not used.
+ - **5.6 Manual Orders:** as received. CUSTOMER = MANUAL means samples/marketing sends; CUSTOMER = AMAZON means ADS → FBA transfers.
++- **5.7 Ops Hub `wo_log`:** the same kit lines (rule 5.5) are written to the `wo_log` tab of Ops Hub 2.0, one row per line: **Date** (col A), **Quantity** = Pieces (B), **SKU** = Job (C), **Cost** = the per-piece Rate (G). Setup fees are not written. Columns are found by their header in row 1. Nothing else on the tab is touched — Description, Channel and Month (D–F) are formulas there, and the rate table at the right stays put.
++  - Rows dated in the report's month are **replaced** by the report's lines (oldest first), so running again never doubles them and corrections in a new report replace the old numbers. Rows for other months are never changed; if the month's row count changes, the rows dated after it move up or down with it.
++  - The new rows go where that month's rows were; if there were none, before the first later-dated row, otherwise at the end.
++  - The run stops **before anything changes** if the tab or a header is missing, a row has a quantity/SKU/cost but no readable date, or a kit line is dated outside the report's month. `wo_log` is written last, after the workbook is built. Checks shows which rows hold the month's lines. Turn it off with `WO_LOG.enabled: false` in Config.gs.
+ 
+ ## 6. Reference tabs
+ 
+@@ -134,6 +138,7 @@ Each line shows **OK**, **FLAG** (needs attention), **CHECK** (confirm by eye) o
+ - **12.6** MFG Starting / MFG Inventory filled in; SKUs typed as numbers on the yellow tabs (they must be text to match).
+ - **12.7** Inventory Valuation total = sum of block subtotals.
+ - **12.8** Work orders parsed completely (lines = report TOTAL).
++- **12.8a** Which `wo_log` rows hold this month's kit lines, and whether they changed (rule 5.7).
+ - **12.9** Where the starting balances came from; where the Shopify data came from; files ignored; build time.
+ 
+ ## 13. Shopify Sell Thru file (replaces the old "DairyPill Monthly Sell Thru" script)
+diff --git a/SETUP.md b/SETUP.md
+index 078409e..7c68f7c 100644
+--- a/SETUP.md
++++ b/SETUP.md
+@@ -24,6 +24,7 @@ No coding needed. You copy one file into Google Apps Script once; after that you
+ 1. In the toolbar dropdown next to **Debug**, choose **buildEOM** and click **Run**.
+ 2. Google asks for permission → **Review permissions** → pick your account → **Advanced** → **Go to DairyPill EOM (unsafe)** → **Allow**.
+    ("Unsafe" just means Google hasn't reviewed a script you wrote yourself — normal for personal scripts.)
++3. The Google account that runs the script needs **edit** access to **DairyPill Ops Hub 2.0** — it reads the BOM there and writes the month's kit lines into the `wo_log` tab (rule 5.7).
+ 
+ ---
+ 
+@@ -46,6 +47,7 @@ No coding needed. You copy one file into Google Apps Script once; after that you
+ 
+ 3. In the script editor choose **buildEOM** → **Run**. It takes a few minutes. When it finishes, the **Execution log** at the bottom shows a link to the workbook.
+ 4. Open the workbook. It opens on the **Checks** tab — anything red (**FLAG**) needs attention.
++   The month's work orders are also written into the Ops Hub `wo_log` tab (Date, Quantity, SKU, Cost); the Checks tab says which rows. Don't type the month's ADS work orders into `wo_log` by hand any more — the run replaces that month's rows with the report.
+ 5. Fill in the **yellow tabs**:
+    - **MFG Inventory** — one row per manufacturer and SKU: `MFG` (VitaQuest, VitaPros, …), `SKU`, `Received Qty`, `EOM Qty`.
+    - **ADS Receipts** — `PO Number`, `SKU`, `Qty` received at ADS this month.
+diff --git a/dist/DairyPill_EOM.gs b/dist/DairyPill_EOM.gs
+index 10845ac..4b07548 100644
+--- a/dist/DairyPill_EOM.gs
++++ b/dist/DairyPill_EOM.gs
+@@ -34,6 +34,16 @@ var CONFIG = {
+     headers: { parent: 'Parent SKU', parentDesc: 'Parent Desc', child: 'Child SKU', childDesc: 'Child Desc', qty: 'Qty' }
+   },
+ 
++  // ---- Rule 5.7: the Ops Hub work-order log the kit lines are written to ----
++  // Only the four columns below are written (found by their header in row 1);
++  // every other column (Description, Channel, Month formulas, the rate table) is left alone.
++  WO_LOG: {
++    enabled: true, // false = don't touch wo_log
++    spreadsheetId: '1rCXpffesBqnfocXslxqb9VzuFCQd60X5IV_YPZTkEtE', // DairyPill Ops Hub 2.0
++    sheetName: 'wo_log',
++    headers: { date: 'Date', qty: 'Quantity', sku: 'SKU', cost: 'Cost' } // columns A, B, C, G
++  },
++
+   // ---- Rule 6.2 / 7.3: first-run source for COGS and Prepaid -----------------
+   // Used only when there is no previous month's workbook to carry them from.
+   BOOTSTRAP_WORKBOOK_ID: '1vFNFEbUKyoTlj21PrKWjk_2Yfdhionh7wkkSF2J3pAw', // Sept 2026 (hand-built)
+@@ -155,6 +165,10 @@ function buildEOM() {
+   inputs.amzStart = start.amz;
+   inputs.bomValues = readBomSource_();
+ 
++  // Rule 5.7: check the Ops Hub wo_log can take this month's kit lines (written after the workbook).
++  var woLog = CONFIG.WO_LOG.enabled ? planWoLogUpdate_(inputs.workOrders, m) : null;
++  inputs.woLogNote = woLog ? woLogSummary_(woLog.plan, m) : 'Not updated — WO_LOG.enabled is false in Config.gs.';
++
+   // Rule 13.2: Shopify goes through the standalone Sell Thru file.
+   renameEntry_(e.SHOPIFY, tabs.shopify);
+   var sell = ensureSellThru_(monthFolder, m, e.SHOPIFY, false);
+@@ -205,6 +219,13 @@ function buildEOM() {
+   assertExcelSafe_(wb.sheets);
+   writeWorkbook_(ss, wb);
+ 
++  // Rule 5.7: this month's kit lines into the Ops Hub wo_log (re-read so nothing typed meanwhile is lost).
++  if (woLog) {
++    var wo = planWoLogUpdate_(inputs.workOrders, m);
++    applyWoLog_(wo.sheet, wo.plan);
++    log_('wo_log: ' + woLogSummary_(wo.plan, m));
++  }
++
+   // Rule 2.3: rename raw files to their tab names (after a successful build).
+   renameEntry_(e.ADS, tabs.adsEnd);
+   renameEntry_(e.LEDGER, tabs.ledger);
+@@ -419,6 +440,37 @@ function renameEntry_(entry, base) {
+   if (name !== target) entry.file.setName(target);
+ }
+ 
++/**
++ * Rule 5.7: reads the Ops Hub wo_log (dates as yyyy-mm-dd in the Ops Hub's time zone) and works out
++ * what to write. Stops before anything changes if the tab, a header or a date is wrong.
++ */
++function planWoLogUpdate_(workOrders, m) {
++  var W = CONFIG.WO_LOG;
++  var ops = SpreadsheetApp.openById(W.spreadsheetId);
++  var sheet = sheetByName_(ops, W.sheetName);
++  if (!sheet) throw new Error('The Ops Hub has no tab named "' + W.sheetName + '". Rename it back, or set WO_LOG.enabled to false in Config.gs.');
++  var tz = ops.getSpreadsheetTimeZone();
++  var values = sheet.getDataRange().getValues().map(function (r) {
++    return r.map(function (v) { return Object.prototype.toString.call(v) === '[object Date]' ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : v; });
++  });
++  var plan = planWoLog_(values, workOrders, m);
++  if (plan.changed && plan.firstRow + plan.rows.length - 1 > sheet.getMaxRows()) {
++    throw new Error('The Ops Hub "' + W.sheetName + '" tab needs ' + (plan.firstRow + plan.rows.length - 1) + ' rows but has ' + sheet.getMaxRows() +
++      '. Add rows at the bottom and copy the Description/Channel/Month formulas down, then run again.');
++  }
++  return { sheet: sheet, plan: plan };
++}
++
++/** Rule 5.7: writes ONLY the Date, Quantity, SKU and Cost columns; every other column is left alone. */
++function applyWoLog_(sheet, plan) {
++  if (!plan.changed) return;
++  ['date', 'qty', 'sku', 'cost'].forEach(function (k, j) {
++    var range = sheet.getRange(plan.firstRow, plan.cols[k] + 1, plan.rows.length, 1);
++    if (k === 'sku') range.setNumberFormat('@'); // SKUs stay text (Rule 5.1a)
++    range.setValues(plan.rows.map(function (r) { return [r[j]]; }));
++  });
++}
++
+ function readBomSource_() {
+   var src = SpreadsheetApp.openById(CONFIG.BOM_SOURCE.spreadsheetId);
+   var sheet = sheetByName_(src, CONFIG.BOM_SOURCE.sheetName);
+@@ -863,6 +915,117 @@ function parseWorkOrdersHtml_(html, m) {
+   return out;
+ }
+ 
++// ---------------------------------------------------------------------------
++// Rule 5.7: Ops Hub wo_log
++// ---------------------------------------------------------------------------
++
++function serialToISO_(serial) {
++  var d = new Date(Date.UTC(1899, 11, 30) + serial * 86400000);
++  return d.getUTCFullYear() + '-' + pad2_(d.getUTCMonth() + 1) + '-' + pad2_(d.getUTCDate());
++}
++
++/** "2026-09-01", "09/01/2026" or a date number -> date number; blank -> ''. Loud on anything else. */
++function parseLogDate_(v, where) {
++  if (v === '' || v === null || v === undefined) return '';
++  if (typeof v === 'number') return v;
++  if (v instanceof Date) return dateSerial_(v.getFullYear(), v.getMonth(), v.getDate());
++  var iso = /^\s*(\d{4})-(\d{1,2})-(\d{1,2})\s*$/.exec(String(v));
++  if (iso) return dateSerial_(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
++  return parseMDY_(v, where);
++}
++
++function woLogRowKey_(cells) {
++  return cells.map(function (v) {
++    if (typeof v === 'number') return String(Math.round(v * 1e6) / 1e6);
++    return v === null || v === undefined ? '' : String(v).trim();
++  }).join('|');
++}
++
++/**
++ * Rule 5.7: how wo_log must change so its rows dated in month m are exactly the report's kit lines.
++ * `values` = the whole tab (row 1 = headers), dates as "yyyy-mm-dd" text or date numbers.
++ * Rows dated in the month are replaced; every other row is kept, in order. The month's rows go where
++ * its old rows were (else before the first later-dated row, else at the end).
++ * Returns {cols (0-based, by header), changed, firstRow (sheet row), rows ([date, qty, sku, cost] to write
++ * from firstRow; blank rows clear what moved up), removed, added, monthFirstRow, monthLastRow}.
++ */
++function planWoLog_(values, parsed, m) {
++  var H = CONFIG.WO_LOG.headers;
++  var tab = 'Ops Hub "' + CONFIG.WO_LOG.sheetName + '" tab';
++  if (!values.length) throw new Error('The ' + tab + ' is empty — it needs the headers ' + [H.date, H.qty, H.sku, H.cost].join(', ') + ' in row 1.');
++  var header = values[0].map(function (h) { return String(h === null || h === undefined ? '' : h).trim(); });
++  var cols = {};
++  ['date', 'qty', 'sku', 'cost'].forEach(function (k) { cols[k] = requireHeader_(header, H[k], tab + ' (row 1)'); });
++  var keys = ['date', 'qty', 'sku', 'cost'];
++  function blank(v) { return v === '' || v === null || v === undefined; }
++
++  var last = 0;
++  for (var i = 1; i < values.length; i++) {
++    if (keys.some(function (k) { return !blank(values[i][cols[k]]); })) last = i;
++  }
++  var existing = [];
++  for (i = 1; i <= last; i++) {
++    var r = values[i];
++    var empty = keys.every(function (k) { return blank(r[cols[k]]); });
++    var serial = parseLogDate_(r[cols.date], 'in the ' + tab + ', row ' + (i + 1) + ' (' + H.date + ')');
++    if (!empty && serial === '') {
++      throw new Error('The ' + tab + ', row ' + (i + 1) + ' has a ' + H.qty + '/' + H.sku + '/' + H.cost +
++        ' but no ' + H.date + '. Fill in the date or clear the row, then run again.');
++    }
++    existing.push({ row: i + 1, serial: serial,
++      cells: [serial === '' ? '' : serialToISO_(serial), blank(r[cols.qty]) ? '' : r[cols.qty], cleanSku_(r[cols.sku]), blank(r[cols.cost]) ? '' : r[cols.cost]] });
++  }
++
++  // The report's kit lines, oldest first (report order kept within a day). Setup fees are already gone.
++  var lines = parsed.lines.filter(function (l) { return typeof l.pieces === 'number' && l.pieces !== 0; });
++  var outside = [];
++  var fresh = lines.map(function (l, n) {
++    var s = parseLogDate_(l.date, 'in work order ' + l.wo);
++    if (s < m.firstSerial || s > m.endSerial) outside.push(l.wo + ' (' + l.date + ')');
++    return { serial: s, n: n, cells: [serialToISO_(s), l.pieces, l.sku, l.rate] };
++  }).sort(function (a, b) { return a.serial - b.serial || a.n - b.n; });
++  if (outside.length) {
++    throw new Error('The work-order report has kit lines dated outside ' + m.label + ': ' + outside.join(', ') +
++      '. wo_log is updated one month at a time, so these lines would be lost or counted twice. Ask ADS to correct the dates, then run again.');
++  }
++
++  function inMonth(e) { return e.serial !== '' && e.serial >= m.firstSerial && e.serial <= m.endSerial; }
++  var old = existing.filter(inMonth);
++  var kept = existing.filter(function (e) { return !inMonth(e); });
++  var at;
++  if (old.length) {
++    at = kept.filter(function (e) { return e.row < old[0].row; }).length;
++  } else {
++    at = kept.length;
++    for (i = 0; i < kept.length; i++) if (kept[i].serial !== '' && kept[i].serial > m.endSerial) { at = i; break; }
++  }
++  function cellsOf(e) { return e.cells; }
++  var target = kept.slice(0, at).map(cellsOf).concat(fresh.map(cellsOf), kept.slice(at).map(cellsOf));
++  var before = existing.map(cellsOf);
++  var size = Math.max(target.length, before.length);
++  var first = -1;
++  for (i = 0; i < size; i++) {
++    var want = target[i] || ['', '', '', ''], have = before[i] || ['', '', '', ''];
++    if (woLogRowKey_(want) !== woLogRowKey_(have)) { first = i; break; }
++  }
++  var rows = [];
++  if (first >= 0) for (i = first; i < size; i++) rows.push(target[i] || ['', '', '', '']);
++  return {
++    cols: cols, changed: first >= 0, firstRow: first >= 0 ? first + 2 : null, rows: rows,
++    removed: old.length, added: fresh.length, monthFirstRow: at + 2, monthLastRow: at + 1 + fresh.length,
++    laterRowsMoved: old.length !== fresh.length && kept.slice(at).some(function (e) { return e.serial !== ''; })
++  };
++}
++
++/** One plain-English line about what happened to wo_log (Checks tab and the run log). */
++function woLogSummary_(plan, m) {
++  var where = plan.added ? 'rows ' + plan.monthFirstRow + '–' + plan.monthLastRow + ' hold the ' + plan.added + ' ' + m.label + ' kit lines'
++    : 'no ' + m.label + ' kit lines';
++  if (!plan.changed) return 'Already up to date: ' + where + '.';
++  return 'Updated: ' + where + ' (replaced ' + plan.removed + ' ' + m.label + ' row' + (plan.removed === 1 ? '' : 's') + ' that were there' +
++    (plan.laterRowsMoved ? '; rows dated after ' + m.label + ' moved to make room' : '') + ').';
++}
++
+ // ---------------------------------------------------------------------------
+ // Rule 4.2 / 5.2: Amazon ledger dates
+ // ---------------------------------------------------------------------------
+@@ -1517,6 +1680,7 @@ function checksModel_(ctx, info) {
+   add('12.8', 'Work orders parsed completely', 'OK',
+     info.workOrders.lines + ' kit lines (' + info.workOrders.fees + ' fee lines skipped); line amounts $' + info.workOrders.lineTotal.toFixed(2) +
+     ' = report TOTAL $' + info.workOrders.reportTotal.toFixed(2) + '; billing month ' + info.workOrders.month + '.');
++  if (info.woLogNote) add('5.7', 'Ops Hub wo_log (work-order log)', 'INFO', info.woLogNote);
+   add('8.2', 'Kits built that have no BOM rows', info.kitsWithoutBom.length ? 'FLAG: ' + info.kitsWithoutBom.length : 'OK',
+     info.kitsWithoutBom.length ? 'Components not deducted for: ' + info.kitsWithoutBom.join(', ') + ' — add them to the Ops Hub BOM.' : '');
+   add('6.1', 'BOM duplicate rows removed', info.bomDuplicates.length ? 'INFO' : 'OK', info.bomDuplicates.join('; '));
+@@ -1718,6 +1882,7 @@ function buildWorkbookModel_(inputs) {
+     shopifySource: (inputs.sources && inputs.sources.shopifySource) || '',
+     mfgStartSource: (inputs.sources && inputs.sources.mfgStartSource) || '',
+     ignoredFiles: inputs.ignoredFiles || [],
++    woLogNote: inputs.woLogNote || '',
+     builtAt: inputs.builtAt || inputs.todayStr
+   };
+   var checksM = checksModel_(ctx, info);
+diff --git a/src/Config.gs b/src/Config.gs
+index a69ab63..a15b239 100644
+--- a/src/Config.gs
++++ b/src/Config.gs
+@@ -30,6 +30,16 @@ var CONFIG = {
+     headers: { parent: 'Parent SKU', parentDesc: 'Parent Desc', child: 'Child SKU', childDesc: 'Child Desc', qty: 'Qty' }
+   },
+ 
++  // ---- Rule 5.7: the Ops Hub work-order log the kit lines are written to ----
++  // Only the four columns below are written (found by their header in row 1);
++  // every other column (Description, Channel, Month formulas, the rate table) is left alone.
++  WO_LOG: {
++    enabled: true, // false = don't touch wo_log
++    spreadsheetId: '1rCXpffesBqnfocXslxqb9VzuFCQd60X5IV_YPZTkEtE', // DairyPill Ops Hub 2.0
++    sheetName: 'wo_log',
++    headers: { date: 'Date', qty: 'Quantity', sku: 'SKU', cost: 'Cost' } // columns A, B, C, G
++  },
++
+   // ---- Rule 6.2 / 7.3: first-run source for COGS and Prepaid -----------------
+   // Used only when there is no previous month's workbook to carry them from.
+   BOOTSTRAP_WORKBOOK_ID: '1vFNFEbUKyoTlj21PrKWjk_2Yfdhionh7wkkSF2J3pAw', // Sept 2026 (hand-built)
+diff --git a/src/Logic.gs b/src/Logic.gs
+index 3609cc8..7a51af2 100644
+--- a/src/Logic.gs
++++ b/src/Logic.gs
+@@ -409,6 +409,117 @@ function parseWorkOrdersHtml_(html, m) {
+   return out;
+ }
+ 
++// ---------------------------------------------------------------------------
++// Rule 5.7: Ops Hub wo_log
++// ---------------------------------------------------------------------------
++
++function serialToISO_(serial) {
++  var d = new Date(Date.UTC(1899, 11, 30) + serial * 86400000);
++  return d.getUTCFullYear() + '-' + pad2_(d.getUTCMonth() + 1) + '-' + pad2_(d.getUTCDate());
++}
++
++/** "2026-09-01", "09/01/2026" or a date number -> date number; blank -> ''. Loud on anything else. */
++function parseLogDate_(v, where) {
++  if (v === '' || v === null || v === undefined) return '';
++  if (typeof v === 'number') return v;
++  if (v instanceof Date) return dateSerial_(v.getFullYear(), v.getMonth(), v.getDate());
++  var iso = /^\s*(\d{4})-(\d{1,2})-(\d{1,2})\s*$/.exec(String(v));
++  if (iso) return dateSerial_(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
++  return parseMDY_(v, where);
++}
++
++function woLogRowKey_(cells) {
++  return cells.map(function (v) {
++    if (typeof v === 'number') return String(Math.round(v * 1e6) / 1e6);
++    return v === null || v === undefined ? '' : String(v).trim();
++  }).join('|');
++}
++
++/**
++ * Rule 5.7: how wo_log must change so its rows dated in month m are exactly the report's kit lines.
++ * `values` = the whole tab (row 1 = headers), dates as "yyyy-mm-dd" text or date numbers.
++ * Rows dated in the month are replaced; every other row is kept, in order. The month's rows go where
++ * its old rows were (else before the first later-dated row, else at the end).
++ * Returns {cols (0-based, by header), changed, firstRow (sheet row), rows ([date, qty, sku, cost] to write
++ * from firstRow; blank rows clear what moved up), removed, added, monthFirstRow, monthLastRow}.
++ */
++function planWoLog_(values, parsed, m) {
++  var H = CONFIG.WO_LOG.headers;
++  var tab = 'Ops Hub "' + CONFIG.WO_LOG.sheetName + '" tab';
++  if (!values.length) throw new Error('The ' + tab + ' is empty — it needs the headers ' + [H.date, H.qty, H.sku, H.cost].join(', ') + ' in row 1.');
++  var header = values[0].map(function (h) { return String(h === null || h === undefined ? '' : h).trim(); });
++  var cols = {};
++  ['date', 'qty', 'sku', 'cost'].forEach(function (k) { cols[k] = requireHeader_(header, H[k], tab + ' (row 1)'); });
++  var keys = ['date', 'qty', 'sku', 'cost'];
++  function blank(v) { return v === '' || v === null || v === undefined; }
++
++  var last = 0;
++  for (var i = 1; i < values.length; i++) {
++    if (keys.some(function (k) { return !blank(values[i][cols[k]]); })) last = i;
++  }
++  var existing = [];
++  for (i = 1; i <= last; i++) {
++    var r = values[i];
++    var empty = keys.every(function (k) { return blank(r[cols[k]]); });
++    var serial = parseLogDate_(r[cols.date], 'in the ' + tab + ', row ' + (i + 1) + ' (' + H.date + ')');
++    if (!empty && serial === '') {
++      throw new Error('The ' + tab + ', row ' + (i + 1) + ' has a ' + H.qty + '/' + H.sku + '/' + H.cost +
++        ' but no ' + H.date + '. Fill in the date or clear the row, then run again.');
++    }
++    existing.push({ row: i + 1, serial: serial,
++      cells: [serial === '' ? '' : serialToISO_(serial), blank(r[cols.qty]) ? '' : r[cols.qty], cleanSku_(r[cols.sku]), blank(r[cols.cost]) ? '' : r[cols.cost]] });
++  }
++
++  // The report's kit lines, oldest first (report order kept within a day). Setup fees are already gone.
++  var lines = parsed.lines.filter(function (l) { return typeof l.pieces === 'number' && l.pieces !== 0; });
++  var outside = [];
++  var fresh = lines.map(function (l, n) {
++    var s = parseLogDate_(l.date, 'in work order ' + l.wo);
++    if (s < m.firstSerial || s > m.endSerial) outside.push(l.wo + ' (' + l.date + ')');
++    return { serial: s, n: n, cells: [serialToISO_(s), l.pieces, l.sku, l.rate] };
++  }).sort(function (a, b) { return a.serial - b.serial || a.n - b.n; });
++  if (outside.length) {
++    throw new Error('The work-order report has kit lines dated outside ' + m.label + ': ' + outside.join(', ') +
++      '. wo_log is updated one month at a time, so these lines would be lost or counted twice. Ask ADS to correct the dates, then run again.');
++  }
++
++  function inMonth(e) { return e.serial !== '' && e.serial >= m.firstSerial && e.serial <= m.endSerial; }
++  var old = existing.filter(inMonth);
++  var kept = existing.filter(function (e) { return !inMonth(e); });
++  var at;
++  if (old.length) {
++    at = kept.filter(function (e) { return e.row < old[0].row; }).length;
++  } else {
++    at = kept.length;
++    for (i = 0; i < kept.length; i++) if (kept[i].serial !== '' && kept[i].serial > m.endSerial) { at = i; break; }
++  }
++  function cellsOf(e) { return e.cells; }
++  var target = kept.slice(0, at).map(cellsOf).concat(fresh.map(cellsOf), kept.slice(at).map(cellsOf));
++  var before = existing.map(cellsOf);
++  var size = Math.max(target.length, before.length);
++  var first = -1;
++  for (i = 0; i < size; i++) {
++    var want = target[i] || ['', '', '', ''], have = before[i] || ['', '', '', ''];
++    if (woLogRowKey_(want) !== woLogRowKey_(have)) { first = i; break; }
++  }
++  var rows = [];
++  if (first >= 0) for (i = first; i < size; i++) rows.push(target[i] || ['', '', '', '']);
++  return {
++    cols: cols, changed: first >= 0, firstRow: first >= 0 ? first + 2 : null, rows: rows,
++    removed: old.length, added: fresh.length, monthFirstRow: at + 2, monthLastRow: at + 1 + fresh.length,
++    laterRowsMoved: old.length !== fresh.length && kept.slice(at).some(function (e) { return e.serial !== ''; })
++  };
++}
++
++/** One plain-English line about what happened to wo_log (Checks tab and the run log). */
++function woLogSummary_(plan, m) {
++  var where = plan.added ? 'rows ' + plan.monthFirstRow + '–' + plan.monthLastRow + ' hold the ' + plan.added + ' ' + m.label + ' kit lines'
++    : 'no ' + m.label + ' kit lines';
++  if (!plan.changed) return 'Already up to date: ' + where + '.';
++  return 'Updated: ' + where + ' (replaced ' + plan.removed + ' ' + m.label + ' row' + (plan.removed === 1 ? '' : 's') + ' that were there' +
++    (plan.laterRowsMoved ? '; rows dated after ' + m.label + ' moved to make room' : '') + ').';
++}
++
+ // ---------------------------------------------------------------------------
+ // Rule 4.2 / 5.2: Amazon ledger dates
+ // ---------------------------------------------------------------------------
+@@ -1063,6 +1174,7 @@ function checksModel_(ctx, info) {
+   add('12.8', 'Work orders parsed completely', 'OK',
+     info.workOrders.lines + ' kit lines (' + info.workOrders.fees + ' fee lines skipped); line amounts $' + info.workOrders.lineTotal.toFixed(2) +
+     ' = report TOTAL $' + info.workOrders.reportTotal.toFixed(2) + '; billing month ' + info.workOrders.month + '.');
++  if (info.woLogNote) add('5.7', 'Ops Hub wo_log (work-order log)', 'INFO', info.woLogNote);
+   add('8.2', 'Kits built that have no BOM rows', info.kitsWithoutBom.length ? 'FLAG: ' + info.kitsWithoutBom.length : 'OK',
+     info.kitsWithoutBom.length ? 'Components not deducted for: ' + info.kitsWithoutBom.join(', ') + ' — add them to the Ops Hub BOM.' : '');
+   add('6.1', 'BOM duplicate rows removed', info.bomDuplicates.length ? 'INFO' : 'OK', info.bomDuplicates.join('; '));
+@@ -1264,6 +1376,7 @@ function buildWorkbookModel_(inputs) {
+     shopifySource: (inputs.sources && inputs.sources.shopifySource) || '',
+     mfgStartSource: (inputs.sources && inputs.sources.mfgStartSource) || '',
+     ignoredFiles: inputs.ignoredFiles || [],
++    woLogNote: inputs.woLogNote || '',
+     builtAt: inputs.builtAt || inputs.todayStr
+   };
+   var checksM = checksModel_(ctx, info);
+diff --git a/src/Main.gs b/src/Main.gs
+index 12dc1b0..1a48dd3 100644
+--- a/src/Main.gs
++++ b/src/Main.gs
+@@ -43,6 +43,10 @@ function buildEOM() {
+   inputs.amzStart = start.amz;
+   inputs.bomValues = readBomSource_();
+ 
++  // Rule 5.7: check the Ops Hub wo_log can take this month's kit lines (written after the workbook).
++  var woLog = CONFIG.WO_LOG.enabled ? planWoLogUpdate_(inputs.workOrders, m) : null;
++  inputs.woLogNote = woLog ? woLogSummary_(woLog.plan, m) : 'Not updated — WO_LOG.enabled is false in Config.gs.';
++
+   // Rule 13.2: Shopify goes through the standalone Sell Thru file.
+   renameEntry_(e.SHOPIFY, tabs.shopify);
+   var sell = ensureSellThru_(monthFolder, m, e.SHOPIFY, false);
+@@ -93,6 +97,13 @@ function buildEOM() {
+   assertExcelSafe_(wb.sheets);
+   writeWorkbook_(ss, wb);
+ 
++  // Rule 5.7: this month's kit lines into the Ops Hub wo_log (re-read so nothing typed meanwhile is lost).
++  if (woLog) {
++    var wo = planWoLogUpdate_(inputs.workOrders, m);
++    applyWoLog_(wo.sheet, wo.plan);
++    log_('wo_log: ' + woLogSummary_(wo.plan, m));
++  }
++
+   // Rule 2.3: rename raw files to their tab names (after a successful build).
+   renameEntry_(e.ADS, tabs.adsEnd);
+   renameEntry_(e.LEDGER, tabs.ledger);
+@@ -307,6 +318,37 @@ function renameEntry_(entry, base) {
+   if (name !== target) entry.file.setName(target);
+ }
+ 
++/**
++ * Rule 5.7: reads the Ops Hub wo_log (dates as yyyy-mm-dd in the Ops Hub's time zone) and works out
++ * what to write. Stops before anything changes if the tab, a header or a date is wrong.
++ */
++function planWoLogUpdate_(workOrders, m) {
++  var W = CONFIG.WO_LOG;
++  var ops = SpreadsheetApp.openById(W.spreadsheetId);
++  var sheet = sheetByName_(ops, W.sheetName);
++  if (!sheet) throw new Error('The Ops Hub has no tab named "' + W.sheetName + '". Rename it back, or set WO_LOG.enabled to false in Config.gs.');
++  var tz = ops.getSpreadsheetTimeZone();
++  var values = sheet.getDataRange().getValues().map(function (r) {
++    return r.map(function (v) { return Object.prototype.toString.call(v) === '[object Date]' ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : v; });
++  });
++  var plan = planWoLog_(values, workOrders, m);
++  if (plan.changed && plan.firstRow + plan.rows.length - 1 > sheet.getMaxRows()) {
++    throw new Error('The Ops Hub "' + W.sheetName + '" tab needs ' + (plan.firstRow + plan.rows.length - 1) + ' rows but has ' + sheet.getMaxRows() +
++      '. Add rows at the bottom and copy the Description/Channel/Month formulas down, then run again.');
++  }
++  return { sheet: sheet, plan: plan };
++}
++
++/** Rule 5.7: writes ONLY the Date, Quantity, SKU and Cost columns; every other column is left alone. */
++function applyWoLog_(sheet, plan) {
++  if (!plan.changed) return;
++  ['date', 'qty', 'sku', 'cost'].forEach(function (k, j) {
++    var range = sheet.getRange(plan.firstRow, plan.cols[k] + 1, plan.rows.length, 1);
++    if (k === 'sku') range.setNumberFormat('@'); // SKUs stay text (Rule 5.1a)
++    range.setValues(plan.rows.map(function (r) { return [r[j]]; }));
++  });
++}
++
+ function readBomSource_() {
+   var src = SpreadsheetApp.openById(CONFIG.BOM_SOURCE.spreadsheetId);
+   var sheet = sheetByName_(src, CONFIG.BOM_SOURCE.sheetName);
+diff --git a/test/e2e.test.js b/test/e2e.test.js
+index 03cd0b3..964bb9c 100644
+--- a/test/e2e.test.js
++++ b/test/e2e.test.js
+@@ -59,10 +59,20 @@ const parent = gas.root.createFolder('DairyPill EOM');
+ const sep = parent.createFolder('September 2026');
+ const rawSep = sampleRaw(2026, 8);
+ putMonthFiles(sep, rawSep, { boot: true });
+-gas.spreadsheetWithId(ctx.CONFIG.BOM_SOURCE.spreadsheetId, 'DairyPill Ops Hub 2.0', null, {
++const opsHub = gas.spreadsheetWithId(ctx.CONFIG.BOM_SOURCE.spreadsheetId, 'DairyPill Ops Hub 2.0', null, {
+   Other: [['x']],
+-  bom: rawSep.bomValues.map((r) => ['', '', '', ''].concat(r)) // the real tab is lower-case "bom"; data in E:I
++  bom: rawSep.bomValues.map((r) => ['', '', '', ''].concat(r)), // the real tab is lower-case "bom"; data in E:I
++  // Rule 5.7: A Date, B Quantity, C SKU, G Cost are written; D–F (formulas in the real tab) and the rate table in I:J are not.
++  wo_log: [
++    ['Date', 'Quantity', 'SKU', 'Description', 'Channel', 'Month', 'Cost', '', 'SKU', 'Sep 2026'],
++    ['2026-08-24', 200, '10030', 'd2', 'DTC', 'Aug', 0.54, '', 'Base Fee', 32],
++    ['2026-09-01', 999, '10090', 'd3', 'DTC', 'Sep', 0.54, '', '10030', 0.6], // typed by hand before the report came — replaced
++    ['2026-09-02', 1, '10180', 'd4', 'DTC', 'Sep', 0.54],
++    ['2026-10-02', 7, 'A0030', 'd5', 'Amazon', 'Oct', 0.38] // an October row already typed
++  ]
+ });
++const woLog = () => opsHub.getSheetByName('wo_log').rawValues().map((r) => [r[0], r[1], r[2], r[6]]);
++const woLogSide = () => opsHub.getSheetByName('wo_log').rawValues().map((r) => r.slice(3, 6).concat(r.slice(7)));
+ const cogsWithFormulas = [rawSep.cogsHeader].concat(rawSep.cogsRows.map((r, i) => ['=TRIM(B' + (i + 2) + ')'].concat(r.slice(1))));
+ const bootWb = gas.spreadsheetWithId(ctx.CONFIG.BOOTSTRAP_WORKBOOK_ID, 'Sept hand-built', null, {
+   COGS: cogsWithFormulas,
+@@ -114,6 +124,25 @@ test('1. first run for September builds the full workbook', () => {
+   assert.match(res('MFG Starting Balance filled in'), /^FLAG/);
+   assert.match(checks.find((x) => x[1] === 'Starting balances came from')[3], /Starting Balances" subfolder \(first run\)/);
+   assert.match(checks.find((x) => x[1] === 'Files in the folder that were ignored')[3], /notes\.pdf/);
++
++  // Rule 5.7: September's kit lines replaced the hand-typed September rows; October's row moved down
++  assert.deepEqual(woLog(), [
++    ['Date', 'Quantity', 'SKU', 'Cost'],
++    ['2026-08-24', 200, '10030', 0.54],
++    ['2026-09-03', 5, '10030', 0.54],
++    ['2026-09-15', 4, 'A0030', 0.38],
++    ['2026-09-16', 6, 'A0030', 0.38],
++    ['2026-10-02', 7, 'A0030', 0.38]
++  ]);
++  assert.deepEqual(woLogSide().slice(0, 5), [
++    ['Description', 'Channel', 'Month', '', 'SKU', 'Sep 2026'],
++    ['d2', 'DTC', 'Aug', '', 'Base Fee', 32],
++    ['d3', 'DTC', 'Sep', '', '10030', 0.6],
++    ['d4', 'DTC', 'Sep'],
++    ['d5', 'Amazon', 'Oct']
++  ], 'other columns untouched');
++  assert.equal(checks.find((x) => x[0] === '5.7')[3],
++    'Updated: rows 3–5 hold the 3 September 2026 kit lines (replaced 2 September 2026 rows that were there; rows dated after September 2026 moved to make room).');
+ });
+ 
+ test('2. typing MFG Inventory + ADS Receipts and running again keeps what you typed', () => {
+@@ -142,6 +171,9 @@ test('2. typing MFG Inventory + ADS Receipts and running again keeps what you ty
+   assert.equal(res('MFG Inventory filled in'), 'OK');
+   assert.equal(res('SKUs with no COGS cost'), 'OK');
+   assert.match(checks.find((x) => x[1] === 'Shopify data came from')[3], /reused/);
++  // Rule 5.7: running again never doubles the wo_log rows
++  assert.equal(woLog().length, 6);
++  assert.equal(checks.find((x) => x[0] === '5.7')[3], 'Already up to date: rows 3–5 hold the 3 September 2026 kit lines.');
+   // nothing anywhere evaluates to an error
+   const errs = [];
+   for (const s of ss2.getSheets()) {
+@@ -181,6 +213,15 @@ test('3. October carries everything forward from September (first-run workbook n
+   assert.match(checks.find((x) => x[1] === 'Starting balances came from')[3], /September 2026 folder/);
+   assert.equal(checks.find((x) => x[1] === 'AMZ SKU Map entries added this run')[2], 'OK');
+   assert.ok(findFile(oct, 'ADS Starting Balance 09.30.2026.csv'));
++  // Rule 5.7: October's report replaces the October row typed earlier; September untouched
++  assert.deepEqual(woLog().slice(2), [
++    ['2026-09-03', 5, '10030', 0.54],
++    ['2026-09-15', 4, 'A0030', 0.38],
++    ['2026-09-16', 6, 'A0030', 0.38],
++    ['2026-10-03', 5, '10030', 0.54],
++    ['2026-10-15', 4, 'A0030', 0.38],
++    ['2026-10-16', 6, 'A0030', 0.38]
++  ]);
+ });
+ 
+ test('missing or duplicate files stop the run with a clear message', () => {
+@@ -220,6 +261,8 @@ test('a failed run changes nothing in the folder', () => {
+   const dec = parent.getFoldersByName('December 2026').next();
+   ctx.CONFIG.MONTH_OVERRIDE = 'December 2026';
+   const before = names(dec);
++  const logBefore = woLog();
+   assert.throws(() => ctx.buildEOM(), /missing 1 day/);
+   assert.deepEqual(names(dec), before, 'no workbook, Sell Thru or renamed files after a failed check');
++  assert.deepEqual(woLog(), logBefore, 'wo_log untouched after a failed check');
+ });
+diff --git a/test/gasMock.js b/test/gasMock.js
+index 47fab5d..f4723c4 100644
+--- a/test/gasMock.js
++++ b/test/gasMock.js
+@@ -130,6 +130,7 @@ class MockSpreadsheet {
+   getUrl() { return 'https://docs.google.com/spreadsheets/d/' + this.file.id; }
+   getName() { return this.file.name; }
+   getSheets() { return this.sheets.slice(); }
++  getSpreadsheetTimeZone() { return 'America/New_York'; }
+   getSheetByName(n) { return this.sheets.find((s) => s.name === n) || null; }
+   insertSheet(n) {
+     if (this.sheets.some((s) => s.name.toLowerCase() === n.toLowerCase())) throw new Error('Sheet already exists: ' + n);
+diff --git a/test/logic.test.js b/test/logic.test.js
+index 88581cd..69d3428 100644
+--- a/test/logic.test.js
++++ b/test/logic.test.js
+@@ -144,3 +144,37 @@ test('only columns the formulas use must be numbers; other odd values are kept a
+   const bad = { header: t.header, rows: [['P', 'B1', '5', 'n/a']] };
+   assert.throws(() => L.bizModel_('biz', bad, L.tabNames_(L.monthInfo_(2026, 8))), /column "Units Ordered"/);
+ });
++
++test('Rule 5.7: wo_log — the month is replaced by the report, other months kept, loud on bad input', () => {
++  const m = L.monthInfo_(2026, 8);
++  const H = ['Date', 'Quantity', 'SKU', 'Description', 'Channel', 'Month', 'Cost'];
++  const line = (date, sku, pieces, rate) => ({ wo: 'WO_1', date, sku, pieces, rate });
++  const parsed = { lines: [line('2026-09-14', '10180', 50, 0.54), line('2026-09-03', 'A0030', 990, 0.38), line('2026-09-14', '10270', 15, 0.59)] };
++  const row = (d, q, s, c) => [d, q, s, '', '', '', c];
++
++  // no September rows yet: inserted before the first later-dated row, oldest first, report order within a day
++  let p = L.planWoLog_([H, row('2026-08-24', 200, '10030', 0.54), row(46238, 7, 'A0030', 0.38) /* 2026-08-02 as a date number */, row('10/02/2026', 7, 'A0030', 0.38)], parsed, m);
++  assert.equal(p.firstRow, 4);
++  assert.deepEqual(plain(p.rows), [['2026-09-03', 990, 'A0030', 0.38], ['2026-09-14', 50, '10180', 0.54], ['2026-09-14', 15, '10270', 0.59], ['2026-10-02', 7, 'A0030', 0.38]]);
++  assert.deepEqual([p.removed, p.added, p.monthFirstRow, p.monthLastRow, p.laterRowsMoved], [0, 3, 4, 6, true]);
++
++  // fewer lines than before, at the end of the log: leftover rows are cleared
++  p = L.planWoLog_([H, row('2026-08-24', 200, '10030', 0.54), row('2026-09-01', 1, 'X', 1), row('2026-09-02', 1, 'X', 1), row('2026-09-03', 1, 'X', 1), row('2026-09-04', 1, 'X', 1)], parsed, m);
++  assert.equal(p.firstRow, 3);
++  assert.deepEqual(plain(p.rows.slice(3)), [['', '', '', '']]);
++  assert.match(L.woLogSummary_(p, m), /^Updated: rows 3–5 hold the 3 September 2026 kit lines \(replaced 4 September 2026 rows that were there\)\.$/);
++
++  // already matching (numbers typed as text, SKU stored as a number): nothing to write
++  p = L.planWoLog_([H, row('2026-09-03', '990', 'A0030', 0.38), row('2026-09-14', 50, 10180, '0.54'), row('2026-09-14', 15, '10270', 0.59)], parsed, m);
++  assert.equal(p.changed, false);
++
++  // columns found by header, wherever they are; zero-piece lines skipped
++  p = L.planWoLog_([['SKU', 'Cost', 'Date', 'Quantity']], { lines: [line('2026-09-03', '10030', 5, 0.54), line('2026-09-03', '10030', '', 0.54)] }, m);
++  assert.deepEqual(plain(p.cols), { date: 2, qty: 3, sku: 0, cost: 1 });
++  assert.deepEqual(plain(p.rows), [['2026-09-03', 5, '10030', 0.54]]);
++
++  assert.throws(() => L.planWoLog_([['Date', 'Qty', 'SKU', 'Cost']], parsed, m), /missing the column "Quantity"/);
++  assert.throws(() => L.planWoLog_([H, row('', 5, '10030', 0.54)], parsed, m), /row 2 has a Quantity\/SKU\/Cost but no Date/);
++  assert.throws(() => L.planWoLog_([H, row('Sept 3', 5, '10030', 0.54)], parsed, m), /row 2 \(Date\) but found "Sept 3"/);
++  assert.throws(() => L.planWoLog_([H], { lines: [line('2026-08-31', '10030', 5, 0.54)] }, m), /dated outside September 2026: WO_1 \(2026-08-31\)/);
++});
+-- 
+2.43.0
+

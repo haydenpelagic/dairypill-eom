@@ -1,0 +1,1047 @@
+From 28d64ea09f63da80ca94e248fd93bea1ceb97c3d Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 9 Nov 2026 03:56:55 +0000
+Subject: [PATCH 1/2] Add Workspace Studio steps to start builds from a flow
+ (Rule 1.5)
+
+- Two Studio steps (Build DairyPill EOM / Shopify Sell Thru) with a Month input
+- Quick read-only checks in the step; full build runs in the background via a
+  one-off trigger and emails the link or the problem; one build at a time
+- Falls back to building inside the step if background triggers are refused
+- buildEOM/shopifyOnly now delegate to month-parameterised versions
+- appsscript.json gains addOns.flows manifest; tests cover the Studio path
+- SETUP.md section F, RULES.md 1.5, CLAUDE.md notes
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YYyzHywrMHHUXT2GMGKuek
+---
+ CLAUDE.md             |   4 +-
+ RULES.md              |   1 +
+ SETUP.md              |  23 +++++
+ appsscript.json       |  96 +++++++++++++++++++-
+ dist/DairyPill_EOM.gs | 204 ++++++++++++++++++++++++++++++++++++++++--
+ src/Logic.gs          |   2 +-
+ src/Main.gs           |  41 +++++++--
+ src/Studio.gs         | 159 ++++++++++++++++++++++++++++++++
+ test/e2e.test.js      |   2 +-
+ test/gasMock.js       |  27 +++++-
+ test/studio.test.js   | 175 ++++++++++++++++++++++++++++++++++++
+ tools/bundle.js       |   2 +-
+ 12 files changed, 718 insertions(+), 18 deletions(-)
+ create mode 100644 src/Studio.gs
+ create mode 100644 test/studio.test.js
+
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 42d32af..48d33c7 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -12,6 +12,7 @@ The owner is non-technical: explain in plain English, never ask them to review c
+ - `src/Config.gs` — every setting (folder ID, channel rules, SKU renames, column names).
+ - `src/Logic.gs` — pure functions: parsing, SKU lists, and every formula. No Google calls. All tested in Node.
+ - `src/Main.gs` — entry points `buildEOM()` / `shopifyOnly()`; Drive reading, starting balances.
++- `src/Studio.gs` — Workspace Studio steps (RULES §1.5): quick checks, background run via a one-off trigger, result email. Wired in `appsscript.json` (`addOns.flows.workflowElements`).
+ - `src/Sheets.gs` — writing sheet models to Google Sheets.
+ - `dist/DairyPill_EOM.gs` — generated bundle the owner pastes into Apps Script. Never edit by hand (`npm run bundle`; a test fails if stale).
+ - `test/` — `formulaEngine.js` calculates the generated formulas; `gasMock.js` is an in-memory Drive/Sheets so `e2e.test.js` runs the real entry points.
+@@ -23,4 +24,5 @@ The owner is non-technical: explain in plain English, never ask them to review c
+ - Tab names ≤ 31 chars, no "/" (dates as MM.DD.YYYY).
+ - SKU columns are written as text; quantities as numbers.
+ - Errors are loud and plain-English; validate all inputs before changing anything in Drive.
+-- After any code change: `npm test` must pass, then `npm run bundle`, and remind the owner to re-paste `dist/DairyPill_EOM.gs`.
++- After any code change: `npm test` must pass, then `npm run bundle`, and remind the owner to re-paste `dist/DairyPill_EOM.gs` (and `appsscript.json` if it changed).
++- Browser work in the owner's Google account (Drive, Studio, Apps Script editor) is done by the owner in a separate local Claude Code session using its built-in browser: give a ready-to-paste prompt that says what it may change, tells it to stop for the owner to sign in to Google, and asks for the results back.
+diff --git a/RULES.md b/RULES.md
+index 133cb21..2d3019b 100644
+--- a/RULES.md
++++ b/RULES.md
+@@ -17,6 +17,7 @@ Claude Code should then update this file, `src/Config.gs` / `src/Logic.gs`, and
+ - **1.2** `buildEOM()` builds **last calendar month** by default. `MONTH_OVERRIDE` in `Config.gs` (e.g. `'September 2026'`) forces a month.
+ - **1.3** The workbook `DAIRYPILL_EOM COGS - September 2026` is created in the month folder. If it already exists it is **rebuilt in place**: raw, helper and summary tabs are replaced; **manual tabs are never overwritten** (rule 7). Safe to run, fill in manual tabs, and run again.
+ - **1.4** Anything missing or ambiguous **stops the run** with a plain-English message naming the file and the problem. No silent defaults.
++- **1.5** **Workspace Studio.** The script is also two Studio steps, *Build DairyPill EOM* and *Build DairyPill Shopify Sell Thru*, used in a flow that starts with **Start manually**. Each takes a **Month** (`October 2026`; blank = last calendar month, as in 1.2). The step first runs the quick checks (month, month folder, one of each file, starting balances); any problem shows in the flow's activity log and nothing is queued. Then the build runs **in the background** and the person who started the flow gets an **email** with the link, or with the problem (1.4) if the full build stops. Only one build runs at a time; a second start while one is running is refused. Running from the script editor (1.2) still works exactly as before.
+ 
+ ## 2. Recognizing files (by their columns, never by file name)
+ 
+diff --git a/SETUP.md b/SETUP.md
+index 078409e..db81345 100644
+--- a/SETUP.md
++++ b/SETUP.md
+@@ -87,3 +87,26 @@ From the second month on, none of this is needed.
+ 1. Open Claude Code in this repository and say what you want, naming the rule from [RULES.md](RULES.md) — e.g. *"Change rule 5.4 so 'wholesale' tags go to a Wholesale channel."*
+ 2. Claude Code updates the rules, the code and the tests, runs the tests, and regenerates `dist/DairyPill_EOM.gs`.
+ 3. Copy the new `dist/DairyPill_EOM.gs` into Apps Script again (select all in `Code.gs`, paste, then put your folder ID back in), save, and run.
++   If Claude Code says `appsscript.json` changed too, paste that as well (see F.1 step 2). Pasting new code updates the Studio steps by itself; you don't need to install again.
++
++## F. Starting it from Workspace Studio (no script editor)
++
++Instead of choosing **buildEOM** → **Run**, you can run a Studio flow: type the month, click run, and get an email with the link (or the problem) a few minutes later. Your Workspace admin has to allow custom steps first: Admin console → Apps → Google Workspace → Workspace Studio → Custom steps settings → **ON**, with **Allow unpublished (test) custom steps** ticked.
++
++### F.1 One-time: install the steps (about 5 minutes)
++1. In the Apps Script project, paste the latest [`dist/DairyPill_EOM.gs`](dist/DairyPill_EOM.gs) into `Code.gs` as usual. Keep your folder ID.
++2. Click the **gear icon (Project Settings)** and tick **Show "appsscript.json" manifest file in editor**. Go back to the editor (`< >` icon), open **appsscript.json**, select everything, and paste the contents of [`appsscript.json`](appsscript.json) from this repository. Press **Ctrl+S** (Cmd+S on Mac).
++3. Click **Deploy → Test deployments**. If it asks for a type, choose **Google Workspace Add-on**. Click **Install**, then **Done**.
++
++### F.2 One-time: build the flow
++1. Open Workspace Studio (Drive → the **EOM Reports** folder's menu → **Set up an automation** → **Do more in Studio**) and start a new flow.
++2. **Starter:** **Start manually**. Add one input called **Month** (text).
++3. **Step:** search for **Build DairyPill EOM** (it may be under add-ons or custom steps). In its **Month** box, insert the starter's **Month** variable.
++4. Name the flow **Build DairyPill EOM** and save or turn it on. The first time, Google asks for permission. The new permissions are "send email as you" (the result email, which only goes to you) and "run when you're not present" (the background build).
++5. Optional: do the same with the **Build DairyPill Shopify Sell Thru** step for a second flow.
++
++### F.3 Every month
++1. Put the reports in the month folder (section B).
++2. Run the **Build DairyPill EOM** flow and type the month, e.g. `October 2026` (leave blank for last month).
++3. If something is missing, the flow's **Activity** shows the problem in plain English straight away. Otherwise you get an email within about 5 minutes with the workbook link (or the problem, if the full build stopped). Only one build runs at a time.
++4. After filling in the yellow tabs, run the flow again, the same as running **buildEOM** again.
+diff --git a/appsscript.json b/appsscript.json
+index e867f29..50eb7e8 100644
+--- a/appsscript.json
++++ b/appsscript.json
+@@ -2,5 +2,99 @@
+   "timeZone": "America/New_York",
+   "dependencies": {},
+   "exceptionLogging": "STACKDRIVER",
+-  "runtimeVersion": "V8"
++  "runtimeVersion": "V8",
++  "addOns": {
++    "common": {
++      "name": "DairyPill EOM",
++      "logoUrl": "https://www.gstatic.com/images/branding/product/2x/apps_script_48dp.png"
++    },
++    "flows": {
++      "workflowElements": [
++        {
++          "id": "buildDairyPillEOM",
++          "state": "ACTIVE",
++          "name": "Build DairyPill EOM",
++          "description": "Checks the month folder, then builds the DairyPill EOM workbook in the background and emails you the link.",
++          "version": {
++            "current_version": 1,
++            "min_version": 1
++          },
++          "workflowAction": {
++            "inputs": [
++              {
++                "id": "month",
++                "description": "Month to build, e.g. October 2026 (blank = last month)",
++                "cardinality": "SINGLE",
++                "dataType": {
++                  "basicType": "STRING"
++                }
++              }
++            ],
++            "outputs": [
++              {
++                "id": "status",
++                "description": "STARTED (building in the background) or DONE",
++                "cardinality": "SINGLE",
++                "dataType": {
++                  "basicType": "STRING"
++                }
++              },
++              {
++                "id": "message",
++                "description": "What happened, in plain English",
++                "cardinality": "SINGLE",
++                "dataType": {
++                  "basicType": "STRING"
++                }
++              }
++            ],
++            "onConfigFunction": "onStudioConfigEOM",
++            "onExecuteFunction": "onStudioRunEOM"
++          }
++        },
++        {
++          "id": "buildDairyPillSellThru",
++          "state": "ACTIVE",
++          "name": "Build DairyPill Shopify Sell Thru",
++          "description": "Checks the month folder, then builds only the Shopify Sell Thru file in the background and emails you the link.",
++          "version": {
++            "current_version": 1,
++            "min_version": 1
++          },
++          "workflowAction": {
++            "inputs": [
++              {
++                "id": "month",
++                "description": "Month to build, e.g. October 2026 (blank = last month)",
++                "cardinality": "SINGLE",
++                "dataType": {
++                  "basicType": "STRING"
++                }
++              }
++            ],
++            "outputs": [
++              {
++                "id": "status",
++                "description": "STARTED (building in the background) or DONE",
++                "cardinality": "SINGLE",
++                "dataType": {
++                  "basicType": "STRING"
++                }
++              },
++              {
++                "id": "message",
++                "description": "What happened, in plain English",
++                "cardinality": "SINGLE",
++                "dataType": {
++                  "basicType": "STRING"
++                }
++              }
++            ],
++            "onConfigFunction": "onStudioConfigShopify",
++            "onExecuteFunction": "onStudioRunShopify"
++          }
++        }
++      ]
++    }
++  }
+ }
+diff --git a/dist/DairyPill_EOM.gs b/dist/DairyPill_EOM.gs
+index 10845ac..80a2112 100644
+--- a/dist/DairyPill_EOM.gs
++++ b/dist/DairyPill_EOM.gs
+@@ -114,12 +114,22 @@ var CONFIG = {
+ // DairyPill EOM Report — ENTRY POINTS
+ //   buildEOM()    builds (or rebuilds) the month's EOM workbook      (Rules 1–12)
+ //   shopifyOnly() makes only the standalone Shopify Sell Thru file   (Rule 13)
+-// Pick the function in the toolbar dropdown and press Run.
++// Pick the function in the toolbar dropdown and press Run — or start it from a
++// Workspace Studio flow (Studio.gs, Rule 1.5).
+ // =============================================================================
+ 
+ function buildEOM() {
++  return buildEOMFor_(CONFIG.MONTH_OVERRIDE);
++}
++
++function shopifyOnly() {
++  return shopifyOnlyFor_(CONFIG.MONTH_OVERRIDE);
++}
++
++/** Rule 1.2: monthText is "September 2026", or blank for last calendar month. Returns the workbook link. */
++function buildEOMFor_(monthText) {
+   var startedAt = new Date();
+-  var m = resolveMonth_(CONFIG.MONTH_OVERRIDE, startedAt);
++  var m = resolveMonth_(monthText, startedAt);
+   var tabs = tabNames_(m);
+   var parent = parentFolder_();
+   var monthFolder = subfolder_(parent, m.label, true);
+@@ -217,15 +227,36 @@ function buildEOM() {
+   return ss.getUrl();
+ }
+ 
+-function shopifyOnly() {
+-  var m = resolveMonth_(CONFIG.MONTH_OVERRIDE, new Date());
++/** Rule 13: only the standalone Sell Thru file. Returns its link. */
++function shopifyOnlyFor_(monthText) {
++  var m = resolveMonth_(monthText, new Date());
+   var monthFolder = subfolder_(parentFolder_(), m.label, true);
+   var scan = scanFolder_(monthFolder, m);
+   requireOneOfEach_(scan, ['SHOPIFY'], m.label);
+   var entry = scan.byType.SHOPIFY[0];
+   renameEntry_(entry, tabNames_(m).shopify);
+   var sell = ensureSellThru_(monthFolder, m, entry, true);
+-  log_('Done: ' + SpreadsheetApp.openById(sell.id).getUrl());
++  var url = SpreadsheetApp.openById(sell.id).getUrl();
++  log_('Done: ' + url);
++  return url;
++}
++
++/**
++ * Rule 1.4 / 1.5: the quick checks a Studio flow runs before queuing a build — month, folder,
++ * one of each file, starting balances. Reads only; changes nothing. Returns the month label.
++ */
++function preflight_(kind, monthText) {
++  var m = resolveMonth_(monthText, new Date());
++  var parent = parentFolder_();
++  var monthFolder = subfolder_(parent, m.label, true);
++  var scan = scanFolder_(monthFolder, m);
++  if (kind === 'SHOPIFY') {
++    requireOneOfEach_(scan, ['SHOPIFY'], m.label);
++  } else {
++    requireOneOfEach_(scan, ['ADS', 'LEDGER', 'BIZ', 'SHOPIFY', 'MANUAL', 'WORK_ORDERS'], m.label);
++    findStartingBalances_(parent, monthFolder, m);
++  }
++  return { label: m.label };
+ }
+ 
+ // -----------------------------------------------------------------------------
+@@ -451,6 +482,167 @@ function rowsOf_(sheet) {
+ 
+ function log_(msg) { console.log(msg); }
+ 
++// ===== Studio.gs =====
++// =============================================================================
++// DairyPill EOM Report — WORKSPACE STUDIO STEPS (Rule 1.5)
++//   "Build DairyPill EOM"              → buildEOMFor_(month)
++//   "Build DairyPill Shopify Sell Thru" → shopifyOnlyFor_(month)
++// A flow ("Start manually" + one of these steps) passes a Month. The step checks
++// the folder in a few seconds (problems show in the flow's activity log), then
++// queues the real build to run in the background and emails the result — so a
++// build of several minutes never depends on how long Studio waits for a step.
++// Wiring: appsscript.json → addOns.flows.workflowElements.
++// =============================================================================
++
++var STUDIO_JOB_KEY_ = 'STUDIO_JOB';
++var STUDIO_JOB_STALE_MS_ = 30 * 60 * 1000; // a queued job older than this is treated as dead
++var STUDIO_KINDS_ = {
++  EOM: { title: 'Build DairyPill EOM', what: 'EOM workbook' },
++  SHOPIFY: { title: 'Build DairyPill Shopify Sell Thru', what: 'Shopify Sell Thru file' }
++};
++
++// ---- Studio callbacks (names are referenced from appsscript.json) -----------
++
++function onStudioConfigEOM(e) { return studioConfigCard_('EOM', e); }
++function onStudioConfigShopify(e) { return studioConfigCard_('SHOPIFY', e); }
++function onStudioRunEOM(e) { return studioRun_('EOM', e); }
++function onStudioRunShopify(e) { return studioRun_('SHOPIFY', e); }
++
++/** Time-driven trigger target: runs the job a Studio step queued, then emails the result. */
++function runQueuedStudioBuild(e) {
++  deleteStudioTriggers_();
++  var props = PropertiesService.getScriptProperties();
++  var raw = props.getProperty(STUDIO_JOB_KEY_);
++  if (!raw) return;
++  var job = JSON.parse(raw);
++  try {
++    runStudioJob_(job);
++  } finally {
++    props.deleteProperty(STUDIO_JOB_KEY_);
++  }
++}
++
++// ---- Implementation ---------------------------------------------------------
++
++function studioConfigCard_(kind, e) {
++  var saved = studioMonthInput_(e && e.workflow && e.workflow.elementConfiguration);
++  var card = {
++    sections: [{
++      header: STUDIO_KINDS_[kind].title,
++      widgets: [
++        { textParagraph: { text: 'Builds the ' + STUDIO_KINDS_[kind].what + ' from the month folder, in the background. ' +
++          'You get an email with the link (or the problem) when it finishes.' } },
++        { textInput: {
++          name: 'month',
++          label: 'Month (e.g. October 2026)',
++          hintText: 'Exactly like the month folder name. Leave blank for last month. Can be a variable from the starter.',
++          value: saved,
++          hostAppDataSource: { workflowDataSource: { includeVariables: true } }
++        } }
++      ]
++    }]
++  };
++  return { action: { navigations: [{ pushCard: card }] } };
++}
++
++/** Reads the "month" input from an actionInvocation / elementConfiguration ('' when absent). */
++function studioMonthInput_(holder) {
++  var v = holder && holder.inputs && holder.inputs.month && holder.inputs.month.stringValues;
++  return v && v.length ? String(v[0]).trim() : '';
++}
++
++/** Rule 1.5: check quickly, queue, report. Never throws — Studio gets a plain-English error instead. */
++function studioRun_(kind, e) {
++  var month = studioMonthInput_(e && e.workflow && e.workflow.actionInvocation);
++  var lock = LockService.getScriptLock();
++  if (!lock.tryLock(10000)) return studioError_('Another DairyPill build is starting right now. Wait a minute and run the flow again.', true);
++  try {
++    var props = PropertiesService.getScriptProperties();
++    var running = props.getProperty(STUDIO_JOB_KEY_);
++    if (running) {
++      var r = JSON.parse(running);
++      if (new Date().getTime() - r.queuedAt < STUDIO_JOB_STALE_MS_) {
++        return studioError_('A build of ' + r.month + ' (' + STUDIO_KINDS_[r.kind].what + ') is already running. ' +
++          'Wait for its email, then run the flow again if you still need to.', true);
++      }
++    }
++    var check = preflight_(kind, month);
++    var job = { kind: kind, month: check.label, email: studioUserEmail_(), queuedAt: new Date().getTime() };
++    props.setProperty(STUDIO_JOB_KEY_, JSON.stringify(job));
++    try {
++      deleteStudioTriggers_();
++      ScriptApp.newTrigger('runQueuedStudioBuild').timeBased().after(1000).create();
++    } catch (err) {
++      // Background runs not allowed here: build now, inside the step, and report directly.
++      props.deleteProperty(STUDIO_JOB_KEY_);
++      var res = runStudioJob_(job);
++      return res.ok ? studioOk_('DONE', res.message) : studioError_(res.message, false);
++    }
++    return studioOk_('STARTED', 'Checks passed for ' + check.label + '. Building the ' + STUDIO_KINDS_[kind].what +
++      ' in the background — an email to ' + (job.email || 'you') + ' will have the link (usually within 5 minutes).');
++  } catch (err) {
++    return studioError_(errorText_(err), false);
++  } finally {
++    lock.releaseLock();
++  }
++}
++
++/** Runs one build and emails the outcome. Returns {ok, message}; never throws. */
++function runStudioJob_(job) {
++  var what = STUDIO_KINDS_[job.kind].what;
++  var ok, message, url;
++  try {
++    url = job.kind === 'SHOPIFY' ? shopifyOnlyFor_(job.month) : buildEOMFor_(job.month);
++    ok = true;
++    message = 'The ' + job.month + ' ' + what + ' is ready: ' + url +
++      (job.kind === 'EOM' ? '\n\nOpen the Checks tab first — anything marked FLAG needs attention.' : '');
++  } catch (err) {
++    ok = false;
++    message = 'The ' + job.month + ' ' + what + ' was NOT built.\n\nProblem: ' + errorText_(err) +
++      '\n\nFix it in the month folder, then run the flow again.';
++  }
++  log_(message);
++  if (job.email) {
++    try {
++      MailApp.sendEmail(job.email, 'DairyPill ' + what + ' — ' + job.month + (ok ? ' — ready' : ' — FAILED'), message);
++    } catch (mailErr) {
++      log_('Could not send the result email: ' + errorText_(mailErr));
++    }
++  }
++  return { ok: ok, message: message };
++}
++
++function deleteStudioTriggers_() {
++  ScriptApp.getProjectTriggers().forEach(function (t) {
++    if (t.getHandlerFunction() === 'runQueuedStudioBuild') ScriptApp.deleteTrigger(t);
++  });
++}
++
++function studioUserEmail_() {
++  var email = '';
++  try { email = Session.getActiveUser().getEmail(); } catch (err) { /* fall through */ }
++  if (!email) { try { email = Session.getEffectiveUser().getEmail(); } catch (err) { /* none */ } }
++  return email;
++}
++
++function errorText_(err) { return err && err.message ? err.message : String(err); }
++
++function studioOk_(status, message) {
++  return { hostAppAction: { workflowAction: { returnOutputVariablesAction: {
++    variables: { status: { stringValues: [status] }, message: { stringValues: [message] } },
++    log: { textFormatElements: [{ text: message }] }
++  } } } };
++}
++
++function studioError_(message, retryable) {
++  return { hostAppAction: { workflowAction: { returnElementErrorAction: {
++    errorLog: { textFormatElements: [{ text: message }] },
++    developerErrorMessage: message,
++    retryability: retryable ? 'RETRYABLE' : 'NOT_RETRYABLE',
++    errorActionability: 'ACTIONABLE'
++  } } } };
++}
++
+ // ===== Logic.gs =====
+ // =============================================================================
+ // DairyPill EOM Report — LOGIC (pure functions, no Google calls)
+@@ -667,7 +859,7 @@ function parseMonthLabel_(s) {
+       if (MONTH_NAMES[i].toLowerCase() === m[1].toLowerCase()) return monthInfo_(Number(m[2]), i);
+     }
+   }
+-  throw new Error('MONTH_OVERRIDE must look like "September 2026" but is "' + s + '".');
++  throw new Error('The month must look like "September 2026" (exactly like the month folder name) but is "' + s + '".');
+ }
+ 
+ /** Rule 1.2: blank override = last calendar month. */
+diff --git a/src/Logic.gs b/src/Logic.gs
+index 3609cc8..b682459 100644
+--- a/src/Logic.gs
++++ b/src/Logic.gs
+@@ -213,7 +213,7 @@ function parseMonthLabel_(s) {
+       if (MONTH_NAMES[i].toLowerCase() === m[1].toLowerCase()) return monthInfo_(Number(m[2]), i);
+     }
+   }
+-  throw new Error('MONTH_OVERRIDE must look like "September 2026" but is "' + s + '".');
++  throw new Error('The month must look like "September 2026" (exactly like the month folder name) but is "' + s + '".');
+ }
+ 
+ /** Rule 1.2: blank override = last calendar month. */
+diff --git a/src/Main.gs b/src/Main.gs
+index 12dc1b0..82b523a 100644
+--- a/src/Main.gs
++++ b/src/Main.gs
+@@ -2,12 +2,22 @@
+ // DairyPill EOM Report — ENTRY POINTS
+ //   buildEOM()    builds (or rebuilds) the month's EOM workbook      (Rules 1–12)
+ //   shopifyOnly() makes only the standalone Shopify Sell Thru file   (Rule 13)
+-// Pick the function in the toolbar dropdown and press Run.
++// Pick the function in the toolbar dropdown and press Run — or start it from a
++// Workspace Studio flow (Studio.gs, Rule 1.5).
+ // =============================================================================
+ 
+ function buildEOM() {
++  return buildEOMFor_(CONFIG.MONTH_OVERRIDE);
++}
++
++function shopifyOnly() {
++  return shopifyOnlyFor_(CONFIG.MONTH_OVERRIDE);
++}
++
++/** Rule 1.2: monthText is "September 2026", or blank for last calendar month. Returns the workbook link. */
++function buildEOMFor_(monthText) {
+   var startedAt = new Date();
+-  var m = resolveMonth_(CONFIG.MONTH_OVERRIDE, startedAt);
++  var m = resolveMonth_(monthText, startedAt);
+   var tabs = tabNames_(m);
+   var parent = parentFolder_();
+   var monthFolder = subfolder_(parent, m.label, true);
+@@ -105,15 +115,36 @@ function buildEOM() {
+   return ss.getUrl();
+ }
+ 
+-function shopifyOnly() {
+-  var m = resolveMonth_(CONFIG.MONTH_OVERRIDE, new Date());
++/** Rule 13: only the standalone Sell Thru file. Returns its link. */
++function shopifyOnlyFor_(monthText) {
++  var m = resolveMonth_(monthText, new Date());
+   var monthFolder = subfolder_(parentFolder_(), m.label, true);
+   var scan = scanFolder_(monthFolder, m);
+   requireOneOfEach_(scan, ['SHOPIFY'], m.label);
+   var entry = scan.byType.SHOPIFY[0];
+   renameEntry_(entry, tabNames_(m).shopify);
+   var sell = ensureSellThru_(monthFolder, m, entry, true);
+-  log_('Done: ' + SpreadsheetApp.openById(sell.id).getUrl());
++  var url = SpreadsheetApp.openById(sell.id).getUrl();
++  log_('Done: ' + url);
++  return url;
++}
++
++/**
++ * Rule 1.4 / 1.5: the quick checks a Studio flow runs before queuing a build — month, folder,
++ * one of each file, starting balances. Reads only; changes nothing. Returns the month label.
++ */
++function preflight_(kind, monthText) {
++  var m = resolveMonth_(monthText, new Date());
++  var parent = parentFolder_();
++  var monthFolder = subfolder_(parent, m.label, true);
++  var scan = scanFolder_(monthFolder, m);
++  if (kind === 'SHOPIFY') {
++    requireOneOfEach_(scan, ['SHOPIFY'], m.label);
++  } else {
++    requireOneOfEach_(scan, ['ADS', 'LEDGER', 'BIZ', 'SHOPIFY', 'MANUAL', 'WORK_ORDERS'], m.label);
++    findStartingBalances_(parent, monthFolder, m);
++  }
++  return { label: m.label };
+ }
+ 
+ // -----------------------------------------------------------------------------
+diff --git a/src/Studio.gs b/src/Studio.gs
+new file mode 100644
+index 0000000..5b820e8
+--- /dev/null
++++ b/src/Studio.gs
+@@ -0,0 +1,159 @@
++// =============================================================================
++// DairyPill EOM Report — WORKSPACE STUDIO STEPS (Rule 1.5)
++//   "Build DairyPill EOM"              → buildEOMFor_(month)
++//   "Build DairyPill Shopify Sell Thru" → shopifyOnlyFor_(month)
++// A flow ("Start manually" + one of these steps) passes a Month. The step checks
++// the folder in a few seconds (problems show in the flow's activity log), then
++// queues the real build to run in the background and emails the result — so a
++// build of several minutes never depends on how long Studio waits for a step.
++// Wiring: appsscript.json → addOns.flows.workflowElements.
++// =============================================================================
++
++var STUDIO_JOB_KEY_ = 'STUDIO_JOB';
++var STUDIO_JOB_STALE_MS_ = 30 * 60 * 1000; // a queued job older than this is treated as dead
++var STUDIO_KINDS_ = {
++  EOM: { title: 'Build DairyPill EOM', what: 'EOM workbook' },
++  SHOPIFY: { title: 'Build DairyPill Shopify Sell Thru', what: 'Shopify Sell Thru file' }
++};
++
++// ---- Studio callbacks (names are referenced from appsscript.json) -----------
++
++function onStudioConfigEOM(e) { return studioConfigCard_('EOM', e); }
++function onStudioConfigShopify(e) { return studioConfigCard_('SHOPIFY', e); }
++function onStudioRunEOM(e) { return studioRun_('EOM', e); }
++function onStudioRunShopify(e) { return studioRun_('SHOPIFY', e); }
++
++/** Time-driven trigger target: runs the job a Studio step queued, then emails the result. */
++function runQueuedStudioBuild(e) {
++  deleteStudioTriggers_();
++  var props = PropertiesService.getScriptProperties();
++  var raw = props.getProperty(STUDIO_JOB_KEY_);
++  if (!raw) return;
++  var job = JSON.parse(raw);
++  try {
++    runStudioJob_(job);
++  } finally {
++    props.deleteProperty(STUDIO_JOB_KEY_);
++  }
++}
++
++// ---- Implementation ---------------------------------------------------------
++
++function studioConfigCard_(kind, e) {
++  var saved = studioMonthInput_(e && e.workflow && e.workflow.elementConfiguration);
++  var card = {
++    sections: [{
++      header: STUDIO_KINDS_[kind].title,
++      widgets: [
++        { textParagraph: { text: 'Builds the ' + STUDIO_KINDS_[kind].what + ' from the month folder, in the background. ' +
++          'You get an email with the link (or the problem) when it finishes.' } },
++        { textInput: {
++          name: 'month',
++          label: 'Month (e.g. October 2026)',
++          hintText: 'Exactly like the month folder name. Leave blank for last month. Can be a variable from the starter.',
++          value: saved,
++          hostAppDataSource: { workflowDataSource: { includeVariables: true } }
++        } }
++      ]
++    }]
++  };
++  return { action: { navigations: [{ pushCard: card }] } };
++}
++
++/** Reads the "month" input from an actionInvocation / elementConfiguration ('' when absent). */
++function studioMonthInput_(holder) {
++  var v = holder && holder.inputs && holder.inputs.month && holder.inputs.month.stringValues;
++  return v && v.length ? String(v[0]).trim() : '';
++}
++
++/** Rule 1.5: check quickly, queue, report. Never throws — Studio gets a plain-English error instead. */
++function studioRun_(kind, e) {
++  var month = studioMonthInput_(e && e.workflow && e.workflow.actionInvocation);
++  var lock = LockService.getScriptLock();
++  if (!lock.tryLock(10000)) return studioError_('Another DairyPill build is starting right now. Wait a minute and run the flow again.', true);
++  try {
++    var props = PropertiesService.getScriptProperties();
++    var running = props.getProperty(STUDIO_JOB_KEY_);
++    if (running) {
++      var r = JSON.parse(running);
++      if (new Date().getTime() - r.queuedAt < STUDIO_JOB_STALE_MS_) {
++        return studioError_('A build of ' + r.month + ' (' + STUDIO_KINDS_[r.kind].what + ') is already running. ' +
++          'Wait for its email, then run the flow again if you still need to.', true);
++      }
++    }
++    var check = preflight_(kind, month);
++    var job = { kind: kind, month: check.label, email: studioUserEmail_(), queuedAt: new Date().getTime() };
++    props.setProperty(STUDIO_JOB_KEY_, JSON.stringify(job));
++    try {
++      deleteStudioTriggers_();
++      ScriptApp.newTrigger('runQueuedStudioBuild').timeBased().after(1000).create();
++    } catch (err) {
++      // Background runs not allowed here: build now, inside the step, and report directly.
++      props.deleteProperty(STUDIO_JOB_KEY_);
++      var res = runStudioJob_(job);
++      return res.ok ? studioOk_('DONE', res.message) : studioError_(res.message, false);
++    }
++    return studioOk_('STARTED', 'Checks passed for ' + check.label + '. Building the ' + STUDIO_KINDS_[kind].what +
++      ' in the background — an email to ' + (job.email || 'you') + ' will have the link (usually within 5 minutes).');
++  } catch (err) {
++    return studioError_(errorText_(err), false);
++  } finally {
++    lock.releaseLock();
++  }
++}
++
++/** Runs one build and emails the outcome. Returns {ok, message}; never throws. */
++function runStudioJob_(job) {
++  var what = STUDIO_KINDS_[job.kind].what;
++  var ok, message, url;
++  try {
++    url = job.kind === 'SHOPIFY' ? shopifyOnlyFor_(job.month) : buildEOMFor_(job.month);
++    ok = true;
++    message = 'The ' + job.month + ' ' + what + ' is ready: ' + url +
++      (job.kind === 'EOM' ? '\n\nOpen the Checks tab first — anything marked FLAG needs attention.' : '');
++  } catch (err) {
++    ok = false;
++    message = 'The ' + job.month + ' ' + what + ' was NOT built.\n\nProblem: ' + errorText_(err) +
++      '\n\nFix it in the month folder, then run the flow again.';
++  }
++  log_(message);
++  if (job.email) {
++    try {
++      MailApp.sendEmail(job.email, 'DairyPill ' + what + ' — ' + job.month + (ok ? ' — ready' : ' — FAILED'), message);
++    } catch (mailErr) {
++      log_('Could not send the result email: ' + errorText_(mailErr));
++    }
++  }
++  return { ok: ok, message: message };
++}
++
++function deleteStudioTriggers_() {
++  ScriptApp.getProjectTriggers().forEach(function (t) {
++    if (t.getHandlerFunction() === 'runQueuedStudioBuild') ScriptApp.deleteTrigger(t);
++  });
++}
++
++function studioUserEmail_() {
++  var email = '';
++  try { email = Session.getActiveUser().getEmail(); } catch (err) { /* fall through */ }
++  if (!email) { try { email = Session.getEffectiveUser().getEmail(); } catch (err) { /* none */ } }
++  return email;
++}
++
++function errorText_(err) { return err && err.message ? err.message : String(err); }
++
++function studioOk_(status, message) {
++  return { hostAppAction: { workflowAction: { returnOutputVariablesAction: {
++    variables: { status: { stringValues: [status] }, message: { stringValues: [message] } },
++    log: { textFormatElements: [{ text: message }] }
++  } } } };
++}
++
++function studioError_(message, retryable) {
++  return { hostAppAction: { workflowAction: { returnElementErrorAction: {
++    errorLog: { textFormatElements: [{ text: message }] },
++    developerErrorMessage: message,
++    retryability: retryable ? 'RETRYABLE' : 'NOT_RETRYABLE',
++    errorActionability: 'ACTIONABLE'
++  } } } };
++}
+diff --git a/test/e2e.test.js b/test/e2e.test.js
+index 03cd0b3..fe7daea 100644
+--- a/test/e2e.test.js
++++ b/test/e2e.test.js
+@@ -14,7 +14,7 @@ const { sampleRaw, csv } = require('./fixtures/sampleMonth');
+ 
+ function load(gas) {
+   const ctx = vm.createContext(gas.sandbox);
+-  for (const f of ['Config.gs', 'Logic.gs', 'Sheets.gs', 'Main.gs']) {
++  for (const f of ['Config.gs', 'Logic.gs', 'Sheets.gs', 'Main.gs', 'Studio.gs']) {
+     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src', f), 'utf8'), ctx, { filename: f });
+   }
+   return ctx;
+diff --git a/test/gasMock.js b/test/gasMock.js
+index 47fab5d..34cc079 100644
+--- a/test/gasMock.js
++++ b/test/gasMock.js
+@@ -154,6 +154,7 @@ class MockSpreadsheet {
+ 
+ function createGas(opts) {
+   const drive = { files: new Map(), folders: new Map() };
++  const services = { props: {}, triggers: [], mail: [], triggersBlocked: false };
+   const root = new MockFolder(drive, 'My Drive', null);
+   const ruleBuilder = () => { const b = { whenTextStartsWith: () => b, whenTextEqualTo: () => b, setBackground: () => b, setRanges: () => b, build: () => ({}) }; return b; };
+   const sandbox = {
+@@ -172,10 +173,32 @@ function createGas(opts) {
+       BorderStyle: { SOLID: 'solid' }
+     },
+     Utilities: { formatDate: (d, tz, fmt) => (fmt === 'yyyy-MM-dd' ? (opts && opts.today) || '2026-10-05' : ((opts && opts.today) || '2026-10-05') + ' 09:00') },
+-    Session: { getScriptTimeZone: () => 'America/New_York', getActiveUser: () => ({ getEmail: () => 'tester@example.com' }) }
++    Session: {
++      getScriptTimeZone: () => 'America/New_York',
++      getActiveUser: () => ({ getEmail: () => 'tester@example.com' }),
++      getEffectiveUser: () => ({ getEmail: () => 'tester@example.com' })
++    },
++    // Studio (Rule 1.5): script properties, a lock, one-off triggers and the result email.
++    PropertiesService: { getScriptProperties: () => ({
++      getProperty: (k) => (k in services.props ? services.props[k] : null),
++      setProperty: (k, v) => { services.props[k] = String(v); },
++      deleteProperty: (k) => { delete services.props[k]; }
++    }) },
++    LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) },
++    ScriptApp: {
++      newTrigger: (fn) => {
++        const t = { fn, getHandlerFunction: () => fn };
++        const b = { timeBased: () => b, after: (ms) => { t.after = ms; return b; },
++          create: () => { if (services.triggersBlocked) throw new Error('Add-ons cannot create this trigger'); services.triggers.push(t); return t; } };
++        return b;
++      },
++      getProjectTriggers: () => services.triggers.slice(),
++      deleteTrigger: (t) => { services.triggers = services.triggers.filter((x) => x !== t); }
++    },
++    MailApp: { sendEmail: (to, subject, body) => { services.mail.push({ to, subject, body }); } }
+   };
+   return {
+-    drive, root, sandbox,
++    drive, root, sandbox, services,
+     /** A Google Sheet with a given id (used for the Ops Hub BOM and the first-run workbook). */
+     spreadsheetWithId: (id, name, folder, tabs) => {
+       const ss = new MockSpreadsheet(drive, name, folder || root);
+diff --git a/test/studio.test.js b/test/studio.test.js
+new file mode 100644
+index 0000000..e4362c2
+--- /dev/null
++++ b/test/studio.test.js
+@@ -0,0 +1,175 @@
++'use strict';
++// Rule 1.5: the Workspace Studio steps. Runs the real Studio callbacks against the in-memory
++// Drive: check → queue → background build → result email, plus every way it can refuse.
++const test = require('node:test');
++const assert = require('node:assert/strict');
++const fs = require('fs');
++const path = require('path');
++const vm = require('vm');
++const { createGas } = require('./gasMock');
++const { sampleRaw, csv } = require('./fixtures/sampleMonth');
++
++function load(gas) {
++  const ctx = vm.createContext(gas.sandbox);
++  for (const f of ['Config.gs', 'Logic.gs', 'Sheets.gs', 'Main.gs', 'Studio.gs']) {
++    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src', f), 'utf8'), ctx, { filename: f });
++  }
++  return ctx;
++}
++
++function putMonthFiles(folder, raw) {
++  folder.createFile('DY_Stock_Snapshot_Palisades (12).csv', csv(raw.adsEnd));
++  folder.createFile('177349020748.csv', csv(raw.ledger));
++  folder.createFile('BusinessReport.csv', csv(raw.biz));
++  folder.createFile('orders_export.csv', csv(raw.shopify));
++  folder.createFile('manual orders.csv', csv(raw.manual));
++  folder.createFile('ProductionLabor.DY.xls', raw.woHtml, 'application/vnd.ms-excel');
++  const b = folder.createFolder('Starting Balances');
++  b.createFile('DY_Stock_Snapshot_Palisades (11).csv', csv(raw.adsStart));
++  b.createFile('ledger end.csv', csv(raw.amzStart));
++}
++
++/** A fresh Drive with September ready to build (first run). */
++function setup() {
++  const gas = createGas();
++  const ctx = load(gas);
++  const parent = gas.root.createFolder('EOM Reports');
++  const sep = parent.createFolder('September 2026');
++  const raw = sampleRaw(2026, 8);
++  putMonthFiles(sep, raw);
++  gas.spreadsheetWithId(ctx.CONFIG.BOM_SOURCE.spreadsheetId, 'Ops Hub', null, { bom: raw.bomValues.map((r) => ['', '', '', ''].concat(r)) });
++  gas.spreadsheetWithId(ctx.CONFIG.BOOTSTRAP_WORKBOOK_ID, 'Sept hand-built', null, {
++    COGS: [raw.cogsHeader].concat(raw.cogsRows),
++    Prepaid: [['Prepaid POs', 'Invoice', 'SKU']]
++  });
++  ctx.CONFIG.PARENT_FOLDER_ID = parent.getId();
++  return { gas, ctx, parent, sep };
++}
++
++const event = (month) => ({ workflow: { actionInvocation: { inputs: month === undefined ? {} : { month: { stringValues: [month] } } } } });
++const outputs = (res) => res.hostAppAction.workflowAction.returnOutputVariablesAction;
++const error = (res) => res.hostAppAction.workflowAction.returnElementErrorAction;
++const findFile = (folder, name) => { const it = folder.getFilesByName(name); return it.hasNext() ? it.next() : null; };
++
++test('Build DairyPill EOM: checks, queues, builds in the background, emails the link', () => {
++  const { gas, ctx, sep } = setup();
++  const res = ctx.onStudioRunEOM(event('September 2026'));
++  const out = outputs(res);
++  assert.equal(out.variables.status.stringValues[0], 'STARTED');
++  assert.match(out.log.textFormatElements[0].text, /Checks passed for September 2026/);
++  assert.equal(gas.services.triggers.length, 1, 'one background run queued');
++  assert.equal(gas.services.triggers[0].fn, 'runQueuedStudioBuild');
++  assert.equal(findFile(sep, 'DAIRYPILL_EOM COGS - September 2026'), null, 'nothing built yet — the step only checks');
++
++  ctx.runQueuedStudioBuild({});
++  assert.ok(findFile(sep, 'DAIRYPILL_EOM COGS - September 2026'), 'workbook built by the background run');
++  assert.equal(gas.services.mail.length, 1);
++  const mail = gas.services.mail[0];
++  assert.equal(mail.to, 'tester@example.com');
++  assert.match(mail.subject, /EOM workbook — September 2026 — ready/);
++  assert.match(mail.body, /https:\/\/docs\.google\.com\/spreadsheets\/d\//);
++  assert.match(mail.body, /Checks tab/);
++  assert.deepEqual(gas.services.triggers, [], 'trigger removed');
++  assert.equal(gas.services.props.STUDIO_JOB, undefined, 'job cleared');
++});
++
++test('a second run while one is building is refused (retryable), nothing double-queued', () => {
++  const { gas, ctx } = setup();
++  outputs(ctx.onStudioRunEOM(event('September 2026')));
++  const err = error(ctx.onStudioRunEOM(event('September 2026')));
++  assert.equal(err.retryability, 'RETRYABLE');
++  assert.match(err.errorLog.textFormatElements[0].text, /already running/);
++  assert.equal(gas.services.triggers.length, 1);
++});
++
++test('a stale job (older than 30 min) does not block a new run', () => {
++  const { gas, ctx } = setup();
++  gas.services.props.STUDIO_JOB = JSON.stringify({ kind: 'EOM', month: 'August 2026', queuedAt: Date.now() - 31 * 60 * 1000 });
++  assert.equal(outputs(ctx.onStudioRunEOM(event('September 2026'))).variables.status.stringValues[0], 'STARTED');
++});
++
++test('problems found by the checks show in Studio in plain English, and nothing is queued', () => {
++  const { gas, ctx } = setup();
++  let err = error(ctx.onStudioRunEOM(event('October 2026')));
++  assert.equal(err.retryability, 'NOT_RETRYABLE');
++  assert.equal(err.errorActionability, 'ACTIONABLE');
++  assert.match(err.errorLog.textFormatElements[0].text, /No folder named "October 2026" inside "EOM Reports"/);
++
++  err = error(ctx.onStudioRunEOM(event('Sept 2026')));
++  assert.match(err.errorLog.textFormatElements[0].text, /must look like "September 2026"/);
++
++  const { gas: g2, ctx: c2, sep } = setup();
++  const it = sep.getFilesByName('orders_export.csv'); it.next().trashed = true;
++  err = error(c2.onStudioRunEOM(event('September 2026')));
++  assert.match(err.errorLog.textFormatElements[0].text, /missing: Shopify/i);
++
++  assert.deepEqual(gas.services.triggers, []);
++  assert.deepEqual(g2.services.triggers, []);
++  assert.equal(gas.services.props.STUDIO_JOB, undefined);
++});
++
++test('a build that fails in the background emails the problem', () => {
++  const { gas, ctx, sep } = setup();
++  // Passes the quick checks, but the ledger is missing the 1st — caught by the full build.
++  const led = findFile(sep, '177349020748.csv');
++  const raw = sampleRaw(2026, 8);
++  led.content = csv(raw.ledger.filter((r) => !String(r[0]).startsWith('09/01/')));
++  outputs(ctx.onStudioRunEOM(event('September 2026')));
++  ctx.runQueuedStudioBuild({});
++  const mail = gas.services.mail[0];
++  assert.match(mail.subject, /FAILED/);
++  assert.match(mail.body, /was NOT built[\s\S]*missing 1 day\(s\): 09\/01\/2026[\s\S]*run the flow again/);
++  assert.equal(gas.services.props.STUDIO_JOB, undefined, 'job cleared even after a failure');
++});
++
++test('if background runs are not allowed, the step builds right away and reports DONE', () => {
++  const { gas, ctx, sep } = setup();
++  gas.services.triggersBlocked = true;
++  const out = outputs(ctx.onStudioRunEOM(event('September 2026')));
++  assert.equal(out.variables.status.stringValues[0], 'DONE');
++  assert.ok(findFile(sep, 'DAIRYPILL_EOM COGS - September 2026'));
++  assert.equal(gas.services.props.STUDIO_JOB, undefined);
++});
++
++test('Build DairyPill Shopify Sell Thru only needs the Shopify export', () => {
++  const { gas, ctx, sep } = setup();
++  findFile(sep, 'BusinessReport.csv').trashed = true; // not needed for Sell Thru
++  const out = outputs(ctx.onStudioRunShopify(event('September 2026')));
++  assert.match(out.log.textFormatElements[0].text, /Shopify Sell Thru file/);
++  ctx.runQueuedStudioBuild({});
++  assert.ok(findFile(sep, 'DairyPill Sell Thru Sep 2026'));
++  assert.match(gas.services.mail[0].subject, /Shopify Sell Thru file — September 2026 — ready/);
++});
++
++test('blank month means last calendar month (Rule 1.2)', () => {
++  const { ctx } = setup();
++  const now = new Date();
++  const expected = ctx.resolveMonth_('', now).label;
++  const err = error(ctx.onStudioRunEOM(event(undefined)));
++  assert.match(err.errorLog.textFormatElements[0].text, new RegExp('No folder named "' + expected + '"'));
++});
++
++test('config card: one Month box that accepts starter variables and shows the saved value', () => {
++  const { ctx } = setup();
++  const res = ctx.onStudioConfigEOM({ workflow: { elementConfiguration: { inputs: { month: { stringValues: ['October 2026'] } } } } });
++  const card = res.action.navigations[0].pushCard;
++  const input = card.sections[0].widgets.find((w) => w.textInput).textInput;
++  assert.equal(input.name, 'month');
++  assert.equal(input.value, 'October 2026');
++  assert.equal(input.hostAppDataSource.workflowDataSource.includeVariables, true);
++  assert.equal(ctx.onStudioConfigShopify({}).action.navigations[0].pushCard.sections[0].header, 'Build DairyPill Shopify Sell Thru');
++});
++
++test('appsscript.json: every Studio step points at real functions and uses the "month" input', () => {
++  const { ctx } = setup();
++  const man = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'appsscript.json'), 'utf8'));
++  const steps = man.addOns.flows.workflowElements;
++  assert.equal(steps.length, 2);
++  for (const s of steps) {
++    assert.equal(typeof ctx[s.workflowAction.onConfigFunction], 'function', s.workflowAction.onConfigFunction);
++    assert.equal(typeof ctx[s.workflowAction.onExecuteFunction], 'function', s.workflowAction.onExecuteFunction);
++    assert.deepEqual(s.workflowAction.inputs.map((i) => i.id), ['month']);
++    assert.deepEqual(s.workflowAction.outputs.map((o) => o.id), ['status', 'message']);
++  }
++  assert.equal(typeof ctx.runQueuedStudioBuild, 'function', 'trigger target exists');
++});
+diff --git a/tools/bundle.js b/tools/bundle.js
+index 394f3d2..777d481 100644
+--- a/tools/bundle.js
++++ b/tools/bundle.js
+@@ -3,7 +3,7 @@
+ const fs = require('fs');
+ const path = require('path');
+ 
+-const ORDER = ['Config.gs', 'Main.gs', 'Logic.gs', 'Sheets.gs'];
++const ORDER = ['Config.gs', 'Main.gs', 'Studio.gs', 'Logic.gs', 'Sheets.gs'];
+ 
+ function bundle() {
+   const root = path.join(__dirname, '..');
+-- 
+2.43.0
+
+
+From 0ae1b20ccd98dfbeb78c8aafceace84045afbe7e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 9 Nov 2026 04:01:09 +0000
+Subject: [PATCH 2/2] Set PARENT_FOLDER_ID to the EOM Reports folder so pasting
+ needs no edits
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YYyzHywrMHHUXT2GMGKuek
+---
+ SETUP.md              | 8 +++++---
+ dist/DairyPill_EOM.gs | 2 +-
+ src/Config.gs         | 2 +-
+ test/e2e.test.js      | 1 +
+ 4 files changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/SETUP.md b/SETUP.md
+index db81345..2224650 100644
+--- a/SETUP.md
++++ b/SETUP.md
+@@ -7,6 +7,8 @@ No coding needed. You copy one file into Google Apps Script once; after that you
+ ## A. One-time setup (about 15 minutes)
+ 
+ ### 1. Make the Drive folders
++DairyPill's folder already exists: **EOM Reports** (shared drive › DairyPill), and its ID is already set in the script. Only redo this step if you move the reports to a different folder.
++
+ 1. In Google Drive, create a folder called **DairyPill EOM** (or use an existing one).
+ 2. Inside it, create one folder per month, named exactly like **September 2026** (full month name, space, year).
+ 3. Open the **DairyPill EOM** folder and copy its ID from the address bar — the part after `/folders/`.
+@@ -16,7 +18,7 @@ No coding needed. You copy one file into Google Apps Script once; after that you
+ 1. Go to **script.google.com** → **New project**. Click "Untitled project" at the top and rename it **DairyPill EOM**.
+ 2. Delete everything in the `Code.gs` editor.
+ 3. Open [`dist/DairyPill_EOM.gs`](dist/DairyPill_EOM.gs) in this repository on GitHub, click the **Copy raw file** button (two overlapping squares, top right of the file), and paste into `Code.gs`.
+-4. Near the top, find `PARENT_FOLDER_ID: 'PASTE_THE_PARENT_FOLDER_ID_HERE'` and replace the text between the quotes with your folder ID from step 1.3. Keep the quotes.
++4. `PARENT_FOLDER_ID` near the top is already set to the EOM Reports folder. Only change it (the text between the quotes) if you use a different folder.
+ 5. Press **Ctrl+S** (Cmd+S on Mac) to save.
+ 6. Click the **gear icon (Project Settings)** on the left → set **Time zone** to *(GMT-05:00) Eastern Time - New York*.
+ 
+@@ -86,7 +88,7 @@ From the second month on, none of this is needed.
+ 
+ 1. Open Claude Code in this repository and say what you want, naming the rule from [RULES.md](RULES.md) — e.g. *"Change rule 5.4 so 'wholesale' tags go to a Wholesale channel."*
+ 2. Claude Code updates the rules, the code and the tests, runs the tests, and regenerates `dist/DairyPill_EOM.gs`.
+-3. Copy the new `dist/DairyPill_EOM.gs` into Apps Script again (select all in `Code.gs`, paste, then put your folder ID back in), save, and run.
++3. Copy the new `dist/DairyPill_EOM.gs` into Apps Script again (select all in `Code.gs`, paste), save, and run.
+    If Claude Code says `appsscript.json` changed too, paste that as well (see F.1 step 2). Pasting new code updates the Studio steps by itself; you don't need to install again.
+ 
+ ## F. Starting it from Workspace Studio (no script editor)
+@@ -94,7 +96,7 @@ From the second month on, none of this is needed.
+ Instead of choosing **buildEOM** → **Run**, you can run a Studio flow: type the month, click run, and get an email with the link (or the problem) a few minutes later. Your Workspace admin has to allow custom steps first: Admin console → Apps → Google Workspace → Workspace Studio → Custom steps settings → **ON**, with **Allow unpublished (test) custom steps** ticked.
+ 
+ ### F.1 One-time: install the steps (about 5 minutes)
+-1. In the Apps Script project, paste the latest [`dist/DairyPill_EOM.gs`](dist/DairyPill_EOM.gs) into `Code.gs` as usual. Keep your folder ID.
++1. In the Apps Script project, paste the latest [`dist/DairyPill_EOM.gs`](dist/DairyPill_EOM.gs) into `Code.gs` as usual.
+ 2. Click the **gear icon (Project Settings)** and tick **Show "appsscript.json" manifest file in editor**. Go back to the editor (`< >` icon), open **appsscript.json**, select everything, and paste the contents of [`appsscript.json`](appsscript.json) from this repository. Press **Ctrl+S** (Cmd+S on Mac).
+ 3. Click **Deploy → Test deployments**. If it asks for a type, choose **Google Workspace Add-on**. Click **Install**, then **Done**.
+ 
+diff --git a/dist/DairyPill_EOM.gs b/dist/DairyPill_EOM.gs
+index 80a2112..70a03e0 100644
+--- a/dist/DairyPill_EOM.gs
++++ b/dist/DairyPill_EOM.gs
+@@ -12,7 +12,7 @@ var CONFIG = {
+ 
+   // ---- Rule 1.1 / 1.2: folders and which month to build ----------------------
+   // The Google Drive folder that holds one subfolder per month ("September 2026").
+-  PARENT_FOLDER_ID: 'PASTE_THE_PARENT_FOLDER_ID_HERE',
++  PARENT_FOLDER_ID: '16H9CCvtmchb2N7dzhcoY9-43PviS-sxn', // "EOM Reports" (shared drive › DairyPill)
+   // Leave blank to build LAST calendar month. To force a month, type it exactly
+   // like the folder name, e.g. 'September 2026'.
+   MONTH_OVERRIDE: '',
+diff --git a/src/Config.gs b/src/Config.gs
+index a69ab63..088e3dd 100644
+--- a/src/Config.gs
++++ b/src/Config.gs
+@@ -8,7 +8,7 @@ var CONFIG = {
+ 
+   // ---- Rule 1.1 / 1.2: folders and which month to build ----------------------
+   // The Google Drive folder that holds one subfolder per month ("September 2026").
+-  PARENT_FOLDER_ID: 'PASTE_THE_PARENT_FOLDER_ID_HERE',
++  PARENT_FOLDER_ID: '16H9CCvtmchb2N7dzhcoY9-43PviS-sxn', // "EOM Reports" (shared drive › DairyPill)
+   // Leave blank to build LAST calendar month. To force a month, type it exactly
+   // like the folder name, e.g. 'September 2026'.
+   MONTH_OVERRIDE: '',
+diff --git a/test/e2e.test.js b/test/e2e.test.js
+index fe7daea..c207589 100644
+--- a/test/e2e.test.js
++++ b/test/e2e.test.js
+@@ -73,6 +73,7 @@ ctx.CONFIG.MONTH_OVERRIDE = 'September 2026';
+ 
+ test('placeholder folder id gives a plain-English error', () => {
+   const g = createGas(); const c = load(g);
++  c.CONFIG.PARENT_FOLDER_ID = 'PASTE_THE_PARENT_FOLDER_ID_HERE';
+   assert.throws(() => c.buildEOM(), /Set PARENT_FOLDER_ID at the top of Config.gs/);
+ });
+ 
+-- 
+2.43.0
+
