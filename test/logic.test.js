@@ -145,3 +145,37 @@ test('only columns the formulas use must be numbers; other odd values are kept a
   const bad = { header: t.header, rows: [['P', 'B1', '5', 'n/a']] };
   assert.throws(() => L.bizModel_('biz', bad, L.tabNames_(L.monthInfo_(2026, 8))), /column "Units Ordered"/);
 });
+
+test('Rule 5.5a: work-order lines whose Job is blank or words get a SKU only when it is certain', () => {
+  const bom = [['10030', 'x', '80030', 'x', 1], ['10270', 'x', '80090', 'x', 3], ['A0030', 'x', '80030', 'x', 1], ['A0180', 'x', '80090', 'x', 2]];
+  const line = (wo, job, description, pieces) => ({ wo, ticket: '1', description, date: '2026-10-01', sku: job, pieces, rate: 0.5, rateType: 'pieces', amount: 1 });
+  const lines = [
+    line('WO_1', '10030', 'NO GASSY DAYS STARTER KIT 30', 200),                    // Job is a SKU → used as is
+    line('WO_2', 'AMAZON KIT A0030', 'AMAZON KIT A0030', 1040),                    // SKU word inside Job
+    line('WO_3', 'NO GASSY DAYS STARTER KIT 10270', 'NO GASSY DAYS STARTER KIT 10270', 100),
+    line('WO_4', '', 'NO GASSY DAYS STARTER KIT 10270', 150),                      // Job blank → same text as WO_3 (now on the fixes list)
+    line('WO_5', '', 'NO GASSY DAYS STARTER KIT 90', 200),                         // no SKU anywhere → not counted
+    line('WO_6', '', 'AMAZON KIT A-1080', 540),                                   // typo, not a SKU → not counted
+    line('WO_7', '', 'no gassy days starter kit 30 ', 152)                         // on the fixes tab (any case/spacing)
+  ];
+  const fixes = [['NO GASSY DAYS STARTER KIT 30', '10030', 'typed by hand'], ['Old line', '', '']];
+  const r = L.resolveWorkOrderSkus_(lines, bom, fixes, '2026-11-10');
+  assert.deepEqual(plain(r.lines.map((l) => l.sku)), ['10030', 'A0030', '10270', '10270', '', '', '10030']);
+  assert.deepEqual(plain(r.lines.map((l) => l.how.split(' (')[0])), ['Job', 'found A0030 in Job', 'found 10270 in Job', 'WO SKU Fixes tab',
+    'NOT COUNTED — no SKU', 'NOT COUNTED — no SKU', 'WO SKU Fixes tab']);
+  assert.deepEqual(plain(r.unresolved.map((l) => l.wo)), ['WO_5', 'WO_6']);
+  assert.deepEqual(plain(r.corrected.map((l) => l.wo)), ['WO_2', 'WO_3', 'WO_4', 'WO_7']);
+  // The fixes tab keeps hand-typed rows and lists every new text: found SKUs filled in, unknown ones blank to type.
+  assert.deepEqual(plain(r.fixRows.map((x) => [x[0], x[1]])), [
+    ['NO GASSY DAYS STARTER KIT 30', '10030'], ['Old line', ''], ['AMAZON KIT A0030', 'A0030'],
+    ['NO GASSY DAYS STARTER KIT 10270', '10270'], ['NO GASSY DAYS STARTER KIT 90', ''], ['AMAZON KIT A-1080', '']]);
+  // Next month, a SKU typed on the tab is used (and beats the automatic find).
+  const next = L.resolveWorkOrderSkus_([line('WO_8', '', 'AMAZON KIT A-1080', 10), line('WO_9', 'AMAZON KIT A0030', '', 5)], bom,
+    r.fixRows.map((x) => (x[0] === 'AMAZON KIT A-1080' ? [x[0], 'A0180', ''] : x[0] === 'AMAZON KIT A0030' ? [x[0], 'A0090', ''] : x)), '2026-12-01');
+  assert.deepEqual(plain(next.lines.map((l) => l.sku)), ['A0180', 'A0090']);
+  assert.equal(next.unresolved.length, 0);
+  // Two different kit SKUs in the text = ambiguous → not counted.
+  const amb = L.resolveWorkOrderSkus_([line('WO_10', '', 'KIT 10030 OR 10270', 5)], bom, [], 'd');
+  assert.equal(amb.lines[0].sku, '');
+  assert.match(amb.fixRows[0][2], /more than one kit SKU in the text: 10030, 10270/);
+});

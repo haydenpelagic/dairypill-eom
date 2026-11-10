@@ -84,9 +84,7 @@ test('Rule 9.5 MFG: rows mirror MFG Counts in its order; Used is calculated, so 
   assert.deepEqual(['E', 'F', 'G', 'H', 'I', 'J'].map((c) => val(T.variance, vp, c)), [0, 300, 0, 300, 300, 0]);
   assert.equal(val(T.variance, vq, 'D'), 'Raw Material - Component');
   assert.deepEqual(['A', 'B', 'D', 'E', 'I', 'M'].map((c) => val(T.variance, vp + 1, c)), ['', '', '', '', '', ''], 'unused rows stay blank');
-  const sub = findRow(T.variance, 'Subtotal – MFG');
-  assert.equal(sub, vq + 50, 'subtotal after the 50 MFG rows');
-  assert.equal(val(T.variance, sub, 'I'), 420);
+  assert.equal(sheet(T.variance).values.length, vq + 49, 'the 50 MFG rows are the last rows — no subtotal row');
   // Valuation mirrors the same rows
   const v1 = findRow(T.valuation, 'VitaQuest', '70003');
   assert.equal(val(T.valuation, v1, 'E'), 120);
@@ -99,7 +97,7 @@ test('Rule 9.5 / 7.1: a row typed at the bottom of MFG Counts (SKU as a number, 
   const vq = findRow(T.variance, 'VitaQuest', '70003');
   const v = (row, c) => w.value(T.variance, row, c.charCodeAt(0) - 64);
   assert.deepEqual(['A', 'B', 'E', 'F', 'G', 'I', 'J'].map((c) => v(vq + 2, c)), ['VitaQuest', '70001', 0, 0, -40, 40, 0]);
-  assert.equal(w.value(T.variance, findRow(T.variance, 'Subtotal – MFG'), 9), 460);
+  assert.equal(v(vq + 2, 'I') + v(vq, 'I') + v(vq + 1, 'I'), 460);
 });
 
 test('Rule 7.1 / 4.4: a new MFG Counts tab starts with last month\'s MFG + SKU rows (non-zero), quantities blank', () => {
@@ -120,18 +118,26 @@ test('Rule 9.3 costs and missing COGS', () => {
   assert.equal(val(T.variance, a8, 'M'), 'NO COST');
 });
 
-test('Rule 9.1: subtotals add up their own block only', () => {
-  const r = findRow(T.variance, 'Subtotal – ADS');
-  assert.equal(val(T.variance, r, 'E'), 10 + 100 + 200 + 30 + 50 + 40 + 20);
-  assert.equal(val(T.variance, r, 'J'), -7 + 7 - 25 + 0 - 9 + 0 + 0);
+test('Rule 9.1: one flat table (no block headings or subtotal rows) and a Total Variance box to the right', () => {
+  const vals = sheet(T.variance).values;
+  assert.ok(!vals.some((r) => /^(Subtotal|▼)/.test(String(r[0]))), 'no block headings or subtotal rows');
+  assert.equal(vals[4][0], 'ADS', 'data starts right under the header');
+  assert.deepEqual(plain(vals[3].slice(14, 17)), ['', 'Total Variance ($)', '=SUM(N:N)']);
+  let sum = 0;
+  for (let r = 5; r <= vals.length; r++) { const x = val(T.variance, r, 'N'); if (typeof x === 'number') sum += x; }
+  close(val(T.variance, 4, 'Q'), sum);
+  assert.equal(built.sheets.find((s) => s.name === T.variance).totalCell, 'Q4');
 });
 
 test('Rule 10: valuation totals box', () => {
   const ending = 5 * 7.19 + 90 * 2.96 + 170 * 6.90 + 28 * 0.45 + 48 * 2.10 + 35 * 0.64 + 15 * 2.87 + 115 * 2.87 + 4 * 2.10;
   const raw = 300 * 197.96 + 120 * 197.96;
-  close(val(T.valuation, 2, 'B'), ending);
-  close(val(T.valuation, 3, 'B'), raw);
-  close(val(T.valuation, 4, 'B'), ending + raw);
+  const vals = sheet(T.valuation).values;
+  assert.ok(!vals.some((r) => /^(Subtotal|▼)/.test(String(r[0]))), 'no block headings or subtotal rows');
+  assert.deepEqual(plain([vals[3][11], vals[4][11], vals[5][11]]), ['Ending Inventory', 'Raw Material - Component', 'TOTAL INVENTORY VALUE']);
+  close(val(T.valuation, 4, 'M'), ending);
+  close(val(T.valuation, 5, 'M'), raw);
+  close(val(T.valuation, 6, 'M'), ending + raw);
   const a8 = findRow(T.valuation, 'Amazon', 'A80004');
   assert.equal(val(T.valuation, a8, 'E'), 25);
   assert.equal(val(T.valuation, a8, 'J'), 'NO COST');
@@ -161,7 +167,7 @@ test('Rule 12: checks flag what is wrong and pass what is right', () => {
   assert.match(result('Amazon rows with no SKU mapping'), /^FLAG: 1 /); // ASIN B8 has sales
   assert.match(result('Shopify lines with no SKU (not counted anywhere)'), /^FLAG: 1 /);
   assert.equal(result('Rows where Expected Ending Inventory is negative'), 'OK');
-  assert.equal(result('Inventory Valuation total = sum of block subtotals'), 'OK');
+  assert.equal(result('Inventory Valuation total = sum of every row'), 'OK');
   assert.equal(result('MFG Counts filled in'), 'OK');
   assert.equal(result('MFG Counts fits the MFG section'), 'OK');
   const map = rows.find((x) => x[1] === 'AMZ SKU Map entries added this run');
@@ -336,4 +342,37 @@ test('Rule 4.2: Amazon Beginning/Ending include units travelling between Amazon 
   assert.match(f[4], /Starting.*|SUMIFS.*\+SUMIFS.*\+SUMIFS/);
   assert.match(f[8], /^=SUMIFS\(.*MAX.*\)\+SUMIFS\(.*MAX.*\)$/);
   assert.equal(val(T.variance, findRow(T.variance, 'Amazon', 'A0030'), 'I'), 115, '107 on shelf + 5 expired + 3 in transit');
+});
+
+test('Rule 5.5a: kit lines with a blank or wordy Job — counted when certain, otherwise FLAG and listed on WO SKU Fixes', () => {
+  const inputs = sampleInputs(L);
+  const wo = Object.assign({}, inputs.workOrders);
+  const base = wo.lines.find((l) => l.sku === '10030');
+  wo.lines = wo.lines.concat([
+    Object.assign({}, base, { wo: 'WO_X1', sku: '', description: 'NO GASSY DAYS STARTER KIT 10030', pieces: 7 }), // SKU in Description
+    Object.assign({}, base, { wo: 'WO_X2', sku: '', description: 'NO GASSY DAYS STARTER KIT 30', pieces: 9 })     // no SKU anywhere
+  ]);
+  inputs.workOrders = wo;
+  const b = L.buildWorkbookModel_(inputs);
+  const w = workbookFromModels(b.sheets);
+  const sh = (n) => b.sheets.find((s) => s.name === n);
+  const woRows = sh(b.tabs.workOrders).values;
+  assert.deepEqual(plain(woRows[0].slice(9)), ['Job (as reported)', 'How the SKU was found (Rule 5.5a)']);
+  const x1 = woRows.find((r) => r[0] === 'WO_X1'), x2 = woRows.find((r) => r[0] === 'WO_X2');
+  assert.equal(x1[4], '10030');
+  assert.equal(x2[4], '', 'unresolved line has no SKU, so its kits match no row');
+  // Receiving for ADS 10030 = the original kits + 7 (the 9 are not counted)
+  const v = b.sheets.find((s) => s.name === b.tabs.variance).values;
+  const r10030 = v.findIndex((r) => r[0] === 'ADS' && r[1] === '10030') + 1;
+  assert.equal(w.value(b.tabs.variance, r10030, 6) - wb.value(T.variance, findRow(T.variance, 'ADS', '10030'), 6), 7);
+  const checks = sh(b.tabs.checks).values;
+  const line = (label) => checks.find((r) => r[1] === label);
+  assert.match(line('Work-order lines with no usable SKU (kits NOT counted)')[2], /^FLAG: 1 line\(s\) \/ 9 kits not counted/);
+  assert.match(line('Work-order lines with no usable SKU (kits NOT counted)')[3], /WO_X2 .*Job blank, Description "NO GASSY DAYS STARTER KIT 30"/);
+  assert.match(line('Work-order SKUs not taken from Job (confirm)')[2], /^CHECK: 1 line/);
+  assert.deepEqual(plain(sh(b.tabs.woFixes).values.slice(1).map((r) => [r[0], r[1]])),
+    [['NO GASSY DAYS STARTER KIT 10030', '10030'], ['NO GASSY DAYS STARTER KIT 30', '']]);
+  // The normal sample month has nothing to fix.
+  const ok = sheet(T.checks).values;
+  assert.equal(ok.find((r) => r[1] === 'Work-order lines with no usable SKU (kits NOT counted)')[2], 'OK');
 });

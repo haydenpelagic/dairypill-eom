@@ -91,10 +91,21 @@ function writeModel_(ss, model) {
 
   sheet.getRange(1, 1, padded.length, width).setValues(padded);
 
-  // Styling: headers, block headers, subtotals.
+  // Styling: headers, block headers, subtotals, totals boxes.
+  var tableWidth = model.tableWidth || width;
   (model.titleRows || []).forEach(function (r) { sheet.getRange(r, 1).setFontWeight('bold').setFontSize(12); });
   (model.headerRows || []).forEach(function (r) {
-    sheet.getRange(r, 1, 1, width).setFontWeight('bold').setBackground('#d9e1f2').setWrap(true);
+    sheet.getRange(r, 1, 1, tableWidth).setFontWeight('bold').setBackground('#d9e1f2').setWrap(true);
+  });
+  // A totals box = label column + value column to the right of the table (Rules 9.1 / 10.2).
+  (model.boxes || []).forEach(function (b) {
+    var rng = sheet.getRange(b.row, b.col, b.rows, 2);
+    rng.setBackground('#e2efda').setBorder(true, true, true, true, null, null, '#000000', SpreadsheetApp.BorderStyle.SOLID);
+    sheet.getRange(b.row, b.col, b.rows, 1).setFontWeight('bold');
+    sheet.getRange(b.row, b.col + 1, b.rows, 1).setNumberFormat(b.format);
+    var tr = b.totalRow || b.row;
+    sheet.getRange(tr, b.col, 1, 2).setFontWeight('bold')
+      .setBorder(b.totalRow ? true : null, null, null, null, null, null, '#000000', SpreadsheetApp.BorderStyle.SOLID);
   });
   (model.blockRows || []).forEach(function (r) {
     sheet.getRange(r, 1, 1, width).setFontWeight('bold').setBackground('#eeeeee');

@@ -45,7 +45,7 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
 | Group | Tabs (September 2026 example) | Tab color |
 |---|---|---|
 | Summaries | README, Checks, Variance Overview, Inventory Valuation, Outbound Summary | green |
-| You type here | MFG Counts 09.30.2026, ADS Receipts 09.30.2026, Prepaid, COGS | yellow |
+| You type here | MFG Counts 09.30.2026, ADS Receipts 09.30.2026, WO SKU Fixes, Prepaid, COGS | yellow |
 | Starting balances | ADS Starting Balance 08.31.2026, AMZ Starting Balance 08.31.2026, MFG Starting Balance 08.31.2026 | gray |
 | Raw reports | ADS Ending Balance 09.30.2026, AMZ Inventory Ledger 09.30.2026, AMZ Business Report 09.30.2026, Shopify Orders 09.30.2026, Work Orders 09.30.2026, Manual Order Log 09.30.2026, AMZ Log 09.30.2026 | gray |
 | Reference | BOM, AMZ SKU Map, SKU List | blue |
@@ -81,7 +81,14 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
   4. everything else (paid, partially refunded, pending…) → counted
 
   `Counted Qty` = quantity if counted, else 0; every "units sold" formula (Bundle Map, Outbound Summary, Channel Breakdown) uses it. The export must include *Financial Status*, *Cancelled at* and *Lineitem fulfillment status* (Shopify's standard order export does), or the run stops.
-- **5.5 Work orders:** one row per kit line (Work Order, Date, SKU from the *Job* column, Pieces). "Setup Fee" lines are dropped; the *Description* text is ignored (it is sometimes wrong). The run stops if the line amounts don't add up to the report's TOTAL, or if the report is for a different month. Quantities only — labor dollars are not used.
+- **5.5 Work orders:** one row per kit line (Work Order, Date, SKU, Pieces). "Setup Fee" lines are dropped. The run stops if the line amounts don't add up to the report's TOTAL, or if the report is for a different month. Quantities only — labor dollars are not used.
+- **5.5a Which SKU a kit line is for.** ADS sometimes leaves *Job* blank or types words in it (October 2026: `AMAZON KIT A0030`, `NO GASSY DAYS STARTER KIT 10270`, and 7 blank lines = 1,870 kits). For each line, first match wins:
+  1. *Job* is a single word → that is the SKU (as before; a SKU missing from the BOM is still flagged by rule 8.2).
+  2. The line's text — *Job*, or the work order's *Description* when Job is blank — is on the **WO SKU Fixes** tab with a SKU → that SKU (capitals and extra spaces don't matter).
+  3. Exactly **one** BOM kit SKU (a BOM *Parent SKU*) appears as a whole word in Job (else in Description) → that SKU. `AMAZON KIT A0030` → A0030. The text and SKU are added to WO SKU Fixes and listed on Checks as CHECK.
+  4. Otherwise (no SKU word, a typo like `A-1080`, or two different SKUs) → **not counted**: no SKU, the text is added to WO SKU Fixes with the SKU blank, and Checks shows a FLAG with the lines and kit count. Type the SKU on WO SKU Fixes and run `buildEOM` again. Nothing is guessed from words like "STARTER KIT 30".
+
+  **WO SKU Fixes** (`Reported as | Our SKU | Note`) is carried from last month like the AMZ SKU Map; rows you typed are kept and win over step 3. The Work Orders tab shows each line's *Job (as reported)* and *How the SKU was found*.
 - **5.6 Ops Hub shipment logs** (replace the Manual Orders file). Fill these in Ops Hub 2.0 **before** running `buildEOM`; the script reads them directly.
   - `manualorder_log` — columns A:F `ADS Order Number | Channel | SKU | Quantity | Order Date | Ship Date`. Hand-entered shipments out of ADS (samples, marketing, replacements…). **Channel** must be DTC, Marketing, CX, TikTok or Samples (capitals don't matter). **Amazon stops the run**: units sent to Amazon belong in `amz_log`.
   - `amz_log` — columns A:F `ADS Order Number | Amazon Number | SKU | Quantity | Order Date | Ship Date`. **Units shipped out of ADS to Amazon.** They only reduce ADS (rule 9.3). They are not sales, and Amazon's side never uses them: what *arrived* at Amazon is the ledger's *Receipts*.
@@ -108,7 +115,7 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
 
 ## 9. Variance Overview
 
-- **9.1** Blocks in this order: **ADS → Amazon → MFG** (one section; rule 9.5). Each block = a gray header row, one row per SKU (A→Z), and a `Subtotal – <location>` row that adds the rows **between that block's header and its subtotal**.
+- **9.1** One table, no sub-headings or subtotal rows: ADS rows (SKU A→Z), then Amazon rows, then the MFG rows (rule 9.5). The *Location* column says which is which. To the right of the table (row 4) a box shows **Total Variance ($)** = the sum of the whole *Delta $* column.
 - **9.2 Which SKUs get a row** (nothing is typed):
   - **ADS:** every SKU in ADS Starting, ADS Ending, ADS Receipts, Work Orders (kits built), the two Ops Hub logs, or Bundle Map components. Kit components only reduce SKUs already in this list — e.g. 70001/70003 inside a kit never create ADS rows.
   - **Amazon:** every *mapped* SKU in AMZ Starting, the AMZ ledger, or the Business Report with units > 0.
@@ -127,12 +134,12 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
 | Expected $ / Actual $ / Delta $ | Expected × cost, Actual × cost, difference | same | same |
 
 - **9.4 Categorization:** ADS and Amazon = "Ending Inventory"; MFG = "Raw Material - Component".
-- **9.5 MFG section.** `MFG_ROWS` rows (50, more if MFG Counts already has more) where row *k* = row *k* of the MFG Counts tab: MFG and SKU are plain cell links (so reordering or adding rows on MFG Counts shows up immediately, in the same order), Beginning / Received / EOM are looked up as in 9.3, Sold / Used = Beginning + Received − EOM, so Delta is 0. Rows with no SKU stay blank. The `Subtotal – MFG` row sits below the 50 rows. More rows on MFG Counts than the section holds is a FLAG on Checks (run `buildEOM` again and it makes room). The formulas are links, IF, SUM and SUMIFS only — no UNIQUE/FILTER/XLOOKUP, which break in older Excel.
+- **9.5 MFG section.** `MFG_ROWS` rows (50, more if MFG Counts already has more) where row *k* = row *k* of the MFG Counts tab: MFG and SKU are plain cell links (so reordering or adding rows on MFG Counts shows up immediately, in the same order), Beginning / Received / EOM are looked up as in 9.3, Sold / Used = Beginning + Received − EOM, so Delta is 0. Rows with no SKU stay blank. More rows on MFG Counts than the section holds is a FLAG on Checks (run `buildEOM` again and it makes room). The formulas are links, IF, SUM and SUMIFS only — no UNIQUE/FILTER/XLOOKUP, which break in older Excel.
 
 ## 10. Inventory Valuation
 
 - **10.1** Same blocks and rows as Variance Overview. Available Inventory = that row's *Actual Ending* on Variance Overview (matched by Location + SKU; the MFG rows mirror Variance Overview's MFG rows one for one). COGS / Freight / Tariffs from COGS; Total Inventory Value = Available × (COGS + Freight + Tariffs).
-- **10.2** The totals box is at the **top** and never moves: each categorization = SUMIFS on the Categorization column; TOTAL = their sum. No fixed row ranges.
+- **10.2** One table, no sub-headings or subtotal rows (same order as Variance Overview). To the right of the table (from row 4) a totals box: one line per categorization (SUMIFS on the Categorization column — *Ending Inventory*, *Raw Material - Component*) and **TOTAL INVENTORY VALUE** = their sum. No fixed row ranges.
 
 ## 11. Outbound Summary
 
@@ -151,8 +158,9 @@ Each line shows **OK**, **FLAG** (needs attention), **CHECK** (confirm by eye) o
 - **12.4** Shopify lines with no SKU (gift cards etc.; not counted anywhere).
 - **12.5** Rows where Expected Ending Inventory is negative.
 - **12.6** Where MFG starting balances came from (INFO); MFG Counts rows with a SKU but no EOM Qty (FLAG, updates live); MFG Counts longer than the MFG section (FLAG); SKUs typed as numbers on ADS Receipts (they must be text to match — MFG Counts SKUs are converted automatically).
-- **12.7** Inventory Valuation total = sum of block subtotals.
+- **12.7** Inventory Valuation TOTAL = sum of every row's Total Inventory Value (catches a row whose Categorization the totals box doesn't list).
 - **12.8** Work orders parsed completely (lines = report TOTAL).
+- **12.8a** Work-order lines with no usable SKU (FLAG, kits not counted) and SKUs not taken straight from Job (CHECK) — rule 5.5a.
 - **12.9** Where the starting balances came from; where the Shopify data came from; files ignored; build time.
 - **12.10** Amazon starting balance ties to last month's ending (rule 4.2a): OK, FLAG with the SKUs that differ, or INFO if last month's ledger wasn't found.
 - **12.11** Shopify lines not counted (rule 5.4a): number of lines and units.
@@ -169,5 +177,5 @@ Each line shows **OK**, **FLAG** (needs attention), **CHECK** (confirm by eye) o
 - **14.1** Only Excel-safe functions: SUMIFS, SUMIF, COUNTIF(S), COUNT, COUNTA, INDEX/MATCH, IF, IFERROR, ISNUMBER, SEARCH, MAX, SUM, ABS. **Never** XLOOKUP, UNIQUE, FILTER, VSTACK, LET, ARRAYFORMULA, IMPORTRANGE, QUERY (they broke the .xlsx accounting downloads). The script refuses to write a formula that breaks this rule.
 - **14.2** References to other tabs are whole columns (`'Tab'!H:H`), so source length never matters.
 - **14.3** No typed SKUs, channels or locations inside summary formulas — they point at the row's SKU/location cell or a header cell.
-- **14.4** Every block is header + rows + subtotal; totals never depend on fixed row numbers.
+- **14.4** Totals use whole columns or SUMIFS, never fixed row numbers.
 - **14.5** The README tab lists every tab, what it is and its rule number.

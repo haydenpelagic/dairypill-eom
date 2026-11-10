@@ -90,6 +90,9 @@ function buildEOMFor_(monthText) {
   // Rule 6.3: Amazon SKU map — this month's, else last month's.
   var mapSheet = sheetByName_(ss, tabs.skuMap) || (prevSs && sheetByName_(prevSs, tabs.skuMap));
   inputs.skuMapExisting = mapSheet ? readSheetTable_(mapSheet).rows : [];
+  // Rule 5.5a: work-order SKU fixes — this month's, else last month's.
+  var fixSheet = sheetByName_(ss, tabs.woFixes) || (prevSs && sheetByName_(prevSs, tabs.woFixes));
+  inputs.woFixesExisting = fixSheet ? readSheetTable_(fixSheet).rows : [];
 
   // Rule 7: manual tabs (never overwritten). MFG Counts: this month's tab if it exists (null = create it, pre-filled).
   var countsSheet = sheetByName_(ss, tabs.mfgInv);
