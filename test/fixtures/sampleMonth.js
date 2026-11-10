@@ -30,7 +30,7 @@ const lastDay = (y, mi) => new Date(Date.UTC(y, mi + 1, 0)).getUTCDate();
 const SHOP_HEADER = ['Name', 'Email', 'Financial Status', 'Lineitem quantity', 'Lineitem name', 'Lineitem price', 'Lineitem sku', 'Tags', 'Source',
   'Cancelled at', 'Lineitem fulfillment status'];
 const F = ['', 'fulfilled']; // not cancelled, shipped
-const COGS_HEADER = ['Trim', 'Lineitem sku', 'Description', 'Categorization', 'COGS / Unit', 'Freight / Unit', 'Tariffs / Unit', 'Total / Unit'];
+const COGS_HEADER = ['SKU', 'Description', 'Base Cost', 'Freight In', 'Tariff', 'Total / Unit'];
 
 /** Raw file contents (arrays) for a month. Same movements every month; dates follow the month. */
 function sampleRaw(year, monthIndex) {
@@ -104,7 +104,7 @@ function sampleRaw(year, monthIndex) {
     ['X1', 'Has Tin', '51002', 'Bold Travel Tin', '1'],
     ['X2', 'Gold Kit', '70003', 'Lactase', '0.005'],
     ['X3', 'Sample Kit', 'A80004', 'Amazon Sample Kit', '1']];
-  const cogs = (sku, a, b, c) => [sku, sku, '', '', a, b, c, Math.round((a + b + c) * 100) / 100];
+  const cogs = (sku, a, b, c) => [sku, '', a, b, c, Math.round((a + b + c) * 100) / 100];
   const cogsRows = [cogs('10030', 6.76, 0.08, 0.35), cogs('80030', 2.60, 0.01, 0.35), cogs('80090', 5.78, 0.08, 1.04), cogs('51002', 0.45, 0, 0),
     cogs('50001', 2.10, 0, 0), cogs('20001', 0.59, 0.05, 0), cogs('A0030', 2.52, 0, 0.35), cogs('70003', 147, 0, 50.96),
     cogs('80090,80090', 11.56, 0.16, 2.08), cogs('80030,51002', 3.05, 0.01, 0.35), cogs('41001', 0.32, 0, 0)]; // A80004 deliberately missing

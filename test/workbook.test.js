@@ -387,3 +387,17 @@ test('Rule 8.1a: one 41001 mailer per unit sold of 80030 / 80090 / 80090,80090 /
   const r = findRow(T.variance, 'ADS', '41001');
   assert.deepEqual(['E', 'F', 'G', 'H', 'I', 'J'].map((c) => val(T.variance, r, c)), [20, 0, 4, 16, 16, 0]);
 });
+
+test('Rule 6.2: COGS in the new layout (no Trim); a SKU stored as a number still finds its cost', () => {
+  const inputs = sampleInputs(L);
+  inputs.cogs = { header: inputs.cogs.header, rows: inputs.cogs.rows.map((r) => (r[0] === '80090' ? [80090].concat(r.slice(1)) : r)) };
+  const b = L.buildWorkbookModel_(inputs);
+  const w = workbookFromModels(b.sheets);
+  const v = b.sheets.find((s) => s.name === b.tabs.variance).values;
+  const r = v.findIndex((x) => x[0] === 'ADS' && x[1] === '80090') + 1;
+  close(w.value(b.tabs.variance, r, 11), 6.90);
+  const a8 = v.findIndex((x) => x[0] === 'Amazon' && x[1] === 'A80004') + 1;
+  assert.equal(w.value(b.tabs.variance, a8, 11), 'NO COST', 'a SKU with letters and no COGS row is still NO COST');
+  assert.ok(!b.sheets.find((s) => s.name === b.tabs.checks).values.find((x) => x[1] === 'SKUs with no COGS cost')[3].includes('80090,'),
+    'Checks does not list 80090 as missing');
+});

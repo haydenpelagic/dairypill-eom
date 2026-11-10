@@ -100,6 +100,8 @@ class MockSheet {
     return new MockRange(this, a, b, c || 1, d || 1);
   }
   getMaxRows() { return this.maxRows; }
+  getLastRow() { return this.lastRow(); }
+  deleteColumn(c) { this.cells.forEach((row) => { if (row) row.splice(c - 1, 1); }); this.ss.dirty = true; return this; }
   getLastColumn() { return this.lastCol(); }
   getMaxColumns() { return this.maxCols; }
   insertRowsAfter(_, n) { this.maxRows += n; }

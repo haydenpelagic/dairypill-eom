@@ -1112,8 +1112,10 @@ var VARIANCE_HEADER = ['Location', 'SKU', 'Description', 'Categorization', 'Begi
 var VARIANCE_HEADER_ROW = 4;
 
 function costLookup_(ctx, which, skuCell) {
-  return '=IFERROR(INDEX(' + colRef_(ctx.tabs.cogs, ctx.cogs[which]) + ',MATCH(' + skuCell + ',' + colRef_(ctx.tabs.cogs, ctx.cogs.key) +
-    ',0)),' + q_(CONFIG.NO_COST_TEXT) + ')';
+  // Rule 6.2: match the SKU as text, then as a number (a COGS SKU typed as 10030 is a number; ours is text "10030").
+  var val = colRef_(ctx.tabs.cogs, ctx.cogs[which]), key = colRef_(ctx.tabs.cogs, ctx.cogs.key);
+  return '=IFERROR(INDEX(' + val + ',MATCH(' + skuCell + ',' + key + ',0)),IFERROR(INDEX(' + val + ',MATCH(' + skuCell + '*1,' + key +
+    ',0)),' + q_(CONFIG.NO_COST_TEXT) + '))';
 }
 
 function descLookup_(ctx, skuCell) {
@@ -1612,7 +1614,17 @@ function buildWorkbookModel_(inputs) {
   var woM = workOrdersModel_(tabs.workOrders, woParsed);
 
   // --- column letters the summaries use
-  var cogsH = inputs.cogs.header;
+  // Rule 6.2: when COGS is carried from another workbook, old helper columns (Trim) are left behind.
+  var cogsTable = inputs.cogs, cogsDrop = [];
+  if (inputs.copyFrom && inputs.copyFrom.cogs) {
+    cogsDrop = CONFIG.COGS_DROP_COLUMNS.filter(function (n) { return headerIndex_(cogsTable.header, n) >= 0; });
+    var keep = [];
+    var dropIdx = cogsDrop.map(function (n) { return headerIndex_(cogsTable.header, n); });
+    cogsTable.header.forEach(function (_, i) { if (dropIdx.indexOf(i) < 0) keep.push(i); });
+    cogsTable = { header: keep.map(function (i) { return cogsTable.header[i]; }),
+      rows: cogsTable.rows.map(function (r) { return keep.map(function (i) { return r[i]; }); }) };
+  }
+  var cogsH = cogsTable.header;
   var cogs = {};
   for (var k in CONFIG.COGS_COLUMNS) cogs[k] = colLetter_(requireHeader_(cogsH, CONFIG.COGS_COLUMNS[k], 'COGS tab') + 1);
   var ledgerMapped = colLetter_(inputs.ledger.header.length + 1);
@@ -1707,7 +1719,7 @@ function buildWorkbookModel_(inputs) {
 
   var cogsKeys = {};
   var cogsKeyIdx = headerIndex_(cogsH, CONFIG.COGS_COLUMNS.key);
-  inputs.cogs.rows.forEach(function (r) { cogsKeys[cleanSku_(r[cogsKeyIdx])] = true; });
+  cogsTable.rows.forEach(function (r) { cogsKeys[cleanSku_(r[cogsKeyIdx])] = true; });
   var costedSkus = uniqueSorted_([].concat(adsSkus, amzSkus, outboundSkus, blocks.slice(2).reduce(function (a, b) { return a.concat(b.skus); }, [])));
   var info = {
     noCostSkus: costedSkus.filter(function (s) { return !cogsKeys[s]; }),
@@ -1737,8 +1749,9 @@ function buildWorkbookModel_(inputs) {
   var mfgStartM = manualTabModel_(tabs.mfgStart, H.MFG_STARTING, inputs.mfgStart, [2]);
   if (inputs.mfgStartFromPrev) { mfgStartM.preserveIfExists = false; mfgStartM.tabColor = TAB_COLORS.raw; }
   var adsRecM = manualTabModel_(tabs.adsReceipts, H.ADS_RECEIPTS, inputs.adsReceipts, [2]);
-  var cogsM = model_(tabs.cogs, [inputs.cogs.header].concat(inputs.cogs.rows), {
-    preserveIfExists: true, tabColor: TAB_COLORS.manual, copyFrom: inputs.copyFrom ? inputs.copyFrom.cogs : null });
+  var cogsM = model_(tabs.cogs, [cogsTable.header].concat(cogsTable.rows), {
+    preserveIfExists: true, tabColor: TAB_COLORS.manual, copyFrom: inputs.copyFrom ? inputs.copyFrom.cogs : null,
+    dropColumns: cogsDrop });
   var prepaidM = inputs.prepaid
     ? model_(tabs.prepaid, [inputs.prepaid.header].concat(inputs.prepaid.rows), { preserveIfExists: true, tabColor: TAB_COLORS.manual,
       copyFrom: inputs.copyFrom ? inputs.copyFrom.prepaid : null })

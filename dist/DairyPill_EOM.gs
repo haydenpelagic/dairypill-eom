@@ -60,7 +60,10 @@ var CONFIG = {
                    categoryValue: 'Raw Material - Component' },
 
   // ---- Rule 6.2: which COGS columns the summaries read ------------------------
-  COGS_COLUMNS: { key: 'Trim', cogs: 'COGS / Unit', freight: 'Freight / Unit', tariffs: 'Tariffs / Unit', total: 'Total / Unit' },
+  // Layout: SKU | Description | Base Cost | Freight In | Tariff | Total / Unit (no Trim column — SKUs match as text or numbers).
+  COGS_COLUMNS: { key: 'SKU', cogs: 'Base Cost', freight: 'Freight In', tariffs: 'Tariff', total: 'Total / Unit' },
+  // Old helper columns removed when COGS is carried into a new month's workbook.
+  COGS_DROP_COLUMNS: ['Trim'],
 
   // ---- Rule 2: how each raw file is recognized (by its header row) ------------
   FILE_TYPES: {
@@ -1741,8 +1744,10 @@ var VARIANCE_HEADER = ['Location', 'SKU', 'Description', 'Categorization', 'Begi
 var VARIANCE_HEADER_ROW = 4;
 
 function costLookup_(ctx, which, skuCell) {
-  return '=IFERROR(INDEX(' + colRef_(ctx.tabs.cogs, ctx.cogs[which]) + ',MATCH(' + skuCell + ',' + colRef_(ctx.tabs.cogs, ctx.cogs.key) +
-    ',0)),' + q_(CONFIG.NO_COST_TEXT) + ')';
+  // Rule 6.2: match the SKU as text, then as a number (a COGS SKU typed as 10030 is a number; ours is text "10030").
+  var val = colRef_(ctx.tabs.cogs, ctx.cogs[which]), key = colRef_(ctx.tabs.cogs, ctx.cogs.key);
+  return '=IFERROR(INDEX(' + val + ',MATCH(' + skuCell + ',' + key + ',0)),IFERROR(INDEX(' + val + ',MATCH(' + skuCell + '*1,' + key +
+    ',0)),' + q_(CONFIG.NO_COST_TEXT) + '))';
 }
 
 function descLookup_(ctx, skuCell) {
@@ -2241,7 +2246,17 @@ function buildWorkbookModel_(inputs) {
   var woM = workOrdersModel_(tabs.workOrders, woParsed);
 
   // --- column letters the summaries use
-  var cogsH = inputs.cogs.header;
+  // Rule 6.2: when COGS is carried from another workbook, old helper columns (Trim) are left behind.
+  var cogsTable = inputs.cogs, cogsDrop = [];
+  if (inputs.copyFrom && inputs.copyFrom.cogs) {
+    cogsDrop = CONFIG.COGS_DROP_COLUMNS.filter(function (n) { return headerIndex_(cogsTable.header, n) >= 0; });
+    var keep = [];
+    var dropIdx = cogsDrop.map(function (n) { return headerIndex_(cogsTable.header, n); });
+    cogsTable.header.forEach(function (_, i) { if (dropIdx.indexOf(i) < 0) keep.push(i); });
+    cogsTable = { header: keep.map(function (i) { return cogsTable.header[i]; }),
+      rows: cogsTable.rows.map(function (r) { return keep.map(function (i) { return r[i]; }); }) };
+  }
+  var cogsH = cogsTable.header;
   var cogs = {};
   for (var k in CONFIG.COGS_COLUMNS) cogs[k] = colLetter_(requireHeader_(cogsH, CONFIG.COGS_COLUMNS[k], 'COGS tab') + 1);
   var ledgerMapped = colLetter_(inputs.ledger.header.length + 1);
@@ -2336,7 +2351,7 @@ function buildWorkbookModel_(inputs) {
 
   var cogsKeys = {};
   var cogsKeyIdx = headerIndex_(cogsH, CONFIG.COGS_COLUMNS.key);
-  inputs.cogs.rows.forEach(function (r) { cogsKeys[cleanSku_(r[cogsKeyIdx])] = true; });
+  cogsTable.rows.forEach(function (r) { cogsKeys[cleanSku_(r[cogsKeyIdx])] = true; });
   var costedSkus = uniqueSorted_([].concat(adsSkus, amzSkus, outboundSkus, blocks.slice(2).reduce(function (a, b) { return a.concat(b.skus); }, [])));
   var info = {
     noCostSkus: costedSkus.filter(function (s) { return !cogsKeys[s]; }),
@@ -2366,8 +2381,9 @@ function buildWorkbookModel_(inputs) {
   var mfgStartM = manualTabModel_(tabs.mfgStart, H.MFG_STARTING, inputs.mfgStart, [2]);
   if (inputs.mfgStartFromPrev) { mfgStartM.preserveIfExists = false; mfgStartM.tabColor = TAB_COLORS.raw; }
   var adsRecM = manualTabModel_(tabs.adsReceipts, H.ADS_RECEIPTS, inputs.adsReceipts, [2]);
-  var cogsM = model_(tabs.cogs, [inputs.cogs.header].concat(inputs.cogs.rows), {
-    preserveIfExists: true, tabColor: TAB_COLORS.manual, copyFrom: inputs.copyFrom ? inputs.copyFrom.cogs : null });
+  var cogsM = model_(tabs.cogs, [cogsTable.header].concat(cogsTable.rows), {
+    preserveIfExists: true, tabColor: TAB_COLORS.manual, copyFrom: inputs.copyFrom ? inputs.copyFrom.cogs : null,
+    dropColumns: cogsDrop });
   var prepaidM = inputs.prepaid
     ? model_(tabs.prepaid, [inputs.prepaid.header].concat(inputs.prepaid.rows), { preserveIfExists: true, tabColor: TAB_COLORS.manual,
       copyFrom: inputs.copyFrom ? inputs.copyFrom.prepaid : null })
@@ -2453,6 +2469,14 @@ function writeModel_(ss, model) {
     if (!src) throw new Error('Could not find tab "' + model.copyFrom.sheetName + '" to copy into ' + model.name + '.');
     var copy = src.copyTo(ss);
     copy.setName(model.name);
+    // Rule 6.2: remove old helper columns (e.g. Trim) from the copy — header found in the first 10 rows.
+    (model.dropColumns || []).forEach(function (name) {
+      var top = copy.getRange(1, 1, Math.min(10, Math.max(copy.getLastRow(), 1)), Math.max(copy.getLastColumn(), 1)).getValues();
+      for (var r = 0; r < top.length; r++) {
+        var c = headerIndex_(top[r], name);
+        if (c >= 0) { copy.deleteColumn(c + 1); break; }
+      }
+    });
     if (model.tabColor) copy.setTabColor(model.tabColor);
     return 'copied';
   }

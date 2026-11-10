@@ -70,7 +70,8 @@ gas.spreadsheetWithId(ctx.CONFIG.BOM_SOURCE.spreadsheetId, 'DairyPill Ops Hub 2.
   manualorder_log: stackLog('manualLog'),
   amz_log: stackLog('amzLog').map((r) => r.concat(['October'])) // extra columns past F are ignored
 });
-const cogsWithFormulas = [rawSep.cogsHeader].concat(rawSep.cogsRows.map((r, i) => ['=TRIM(B' + (i + 2) + ')'].concat(r.slice(1))));
+// The first-run workbook's COGS still has the old Trim helper column in front; it is dropped when copied (Rule 6.2).
+const cogsWithFormulas = [['Trim'].concat(rawSep.cogsHeader)].concat(rawSep.cogsRows.map((r, i) => ['=TRIM(B' + (i + 2) + ')'].concat(r)));
 const makeBootWb = () => gas.spreadsheetWithId(ctx.CONFIG.BOOTSTRAP_WORKBOOK_ID, 'Sept hand-built', null, {
   COGS: cogsWithFormulas,
   Prepaid: [['Prepaid POs', 'Invoice', 'SKU'], ['POUCHES-26', '102973', '80030']],
@@ -126,8 +127,9 @@ test('1. first run for September builds the full workbook', () => {
   assert.deepEqual(COLS.map((c) => wb.value(tabs.variance, r, c)), [200, 0, 5, 195, 170, -25]);
   const a = rowOf(ss, tabs.variance, 'Amazon', 'A0030');
   assert.deepEqual(COLS.map((c) => wb.value(tabs.variance, a, c)), [120, 15, 20, 115, 115, 0]);
-  // COGS copied from the first-run workbook with its formulas
-  assert.equal(ss.getSheetByName('COGS').rawValues()[1][0], '=TRIM(B2)');
+  // COGS copied from the first-run workbook, old Trim column removed (Rule 6.2)
+  assert.deepEqual(ss.getSheetByName('COGS').rawValues()[0].slice(0, 6), ['SKU', 'Description', 'Base Cost', 'Freight In', 'Tariff', 'Total / Unit']);
+  assert.equal(ss.getSheetByName('COGS').rawValues()[1][0], '10030');
   assert.equal(wb.value(tabs.variance, r, 11), 6.9);
   // First run: MFG start comes from the hand-built workbook; MFG Counts is pre-filled with its rows, quantities to type
   const checks = ss.getSheetByName(tabs.checks).rawValues();
@@ -155,7 +157,7 @@ test('2. typing MFG Counts + ADS Receipts: summaries update without a rerun; run
   assert.deepEqual(COLS.map((c) => live.value(tabs.variance, vpLive, c)), [0, 300, 0, 300, 300, 0]);
   assert.equal(live.value(tabs.valuation, rowOf(ss, tabs.valuation, 'VitaPros', '70003'), 5), 300);
   ss.getSheetByName(tabs.adsReceipts).getRange(2, 1, 1, 3).setValues([['PO-1', '50001', 10]]);
-  ss.getSheetByName('COGS').getRange(13, 1, 1, 8).setValues([['=TRIM(B13)', 'A80004', '', '', 1, 0.03, 0, 1.03]]); // you add a missing cost
+  ss.getSheetByName('COGS').getRange(13, 1, 1, 6).setValues([['A80004', '', 1, 0.03, 0, 1.03]]); // you add a missing cost
 
   ctx.buildEOM();
   const ss2 = findFile(sep, 'DAIRYPILL_EOM COGS - September 2026').ss;
@@ -218,7 +220,7 @@ test('3. October carries everything forward from September (first-run workbook n
   const vp = rowOf(ss, tabs.variance, 'VitaPros', '70003');
   assert.equal(wb.value(tabs.variance, vp, COLS[0]), 300);
   // COGS (with your A80004 edit) and the SKU map came from September's workbook
-  assert.ok(ss.getSheetByName('COGS').rawValues().some((r) => r[1] === 'A80004'));
+  assert.ok(ss.getSheetByName('COGS').rawValues().some((r) => r[0] === 'A80004'));
   const map = ss.getSheetByName('AMZ SKU Map').rawValues();
   assert.ok(map.some((r) => r[0] === 'A80002' && r[2] === 'A80004'));
   const checks = ss.getSheetByName(tabs.checks).rawValues();

@@ -56,7 +56,10 @@ var CONFIG = {
                    categoryValue: 'Raw Material - Component' },
 
   // ---- Rule 6.2: which COGS columns the summaries read ------------------------
-  COGS_COLUMNS: { key: 'Trim', cogs: 'COGS / Unit', freight: 'Freight / Unit', tariffs: 'Tariffs / Unit', total: 'Total / Unit' },
+  // Layout: SKU | Description | Base Cost | Freight In | Tariff | Total / Unit (no Trim column — SKUs match as text or numbers).
+  COGS_COLUMNS: { key: 'SKU', cogs: 'Base Cost', freight: 'Freight In', tariffs: 'Tariff', total: 'Total / Unit' },
+  // Old helper columns removed when COGS is carried into a new month's workbook.
+  COGS_DROP_COLUMNS: ['Trim'],
 
   // ---- Rule 2: how each raw file is recognized (by its header row) ------------
   FILE_TYPES: {
