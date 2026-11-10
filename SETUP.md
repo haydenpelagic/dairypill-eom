@@ -64,7 +64,7 @@ Good to know:
 ### From Workspace Studio (no script editor)
 The script adds two steps to Workspace Studio: **Build DairyPill EOM** and **Build DairyPill Shopify Sell Thru**. A flow is "Start manually" + one of these steps, with **Month** left blank (last month) or typed like the folder name (`October 2026`). The step checks the folder in a few seconds — if something's missing, the flow's activity log says what — then builds in the background and emails you the link (usually within 5 minutes). It always runs the latest code from GitHub.
 
-One-time setup (as the DairyPill account that owns the script):
+One-time setup, signed in as **ops@dairypill.com** (the account that owns the script). The old personal "DairyPill EOM" project is retired — a flow built on it no longer works and must be recreated here:
 1. Open the script (Apps Script project **EOM Automation**) → **Deploy → Test deployments** → **Install**.
 2. In Workspace Studio, create a flow: starter **Start manually**, step **Build DairyPill EOM** (and a second flow for **Build DairyPill Shopify Sell Thru** if you want it). Approve permissions on first run.
 

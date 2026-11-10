@@ -3,6 +3,13 @@
 Google Apps Script that builds DairyPill's end-of-month inventory/COGS workbook from a Drive folder of raw reports.
 The owner is non-technical: explain in plain English, never ask them to review code.
 
+## Ownership — DairyPill owns everything (fact, confirmed in Drive 2026-11-10)
+- The live script is the Apps Script project **"EOM Automation"** (`1RblqXtQ…`, `.clasp.json`), **owned by ops@dairypill.com**. hayden@pelagic.co is an editor. This is the ONLY deploy target — never change `.clasp.json` to another project.
+- The months folder **DairyPill › EOM Reports** (`16H9CC…`, `PARENT_FOLDER_ID`) lives in DairyPill's shared drive.
+- The old personal project **"DairyPill EOM"** (`1VY7Ejzw…`) is retired and in the trash. Never deploy to it, restore it, or point anything at it. A backup clone exists on the owner's Mac only.
+- Workspace Studio flows must be installed and created **as ops@dairypill.com** (they run as whoever created them). Result emails go to whoever runs the flow.
+- Anything that must run as DairyPill (installing the Studio test deployment, creating flows, approving permissions) is a human click in the DairyPill account — say so plainly; don't suggest moving anything back to a personal account to avoid it.
+
 ## Source of truth
 - `RULES.md` is the rule set. Every behaviour change starts there. Rule numbers are referenced in `src/Config.gs` and code comments.
 - When asked to "change rule X": update `RULES.md`, then `src/Config.gs` / `src/Logic.gs`, then the tests, run `npm test`, then `npm run bundle`.
