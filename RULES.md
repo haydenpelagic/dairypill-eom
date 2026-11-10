@@ -45,8 +45,8 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
 | Group | Tabs (September 2026 example) | Tab color |
 |---|---|---|
 | Summaries | README, Checks, Variance Overview, Inventory Valuation, Outbound Summary | green |
-| You type here | MFG Inventory 09.30.2026, ADS Receipts 09.30.2026, Prepaid, COGS | yellow |
-| Starting balances | ADS Starting Balance 08.31.2026, AMZ Starting Balance 08.31.2026, MFG Starting Balance 08.31.2026 | gray (MFG yellow on first run) |
+| You type here | MFG Counts 09.30.2026, ADS Receipts 09.30.2026, Prepaid, COGS | yellow |
+| Starting balances | ADS Starting Balance 08.31.2026, AMZ Starting Balance 08.31.2026, MFG Starting Balance 08.31.2026 | gray |
 | Raw reports | ADS Ending Balance 09.30.2026, AMZ Inventory Ledger 09.30.2026, AMZ Business Report 09.30.2026, Shopify Orders 09.30.2026, Work Orders 09.30.2026, Manual Order Log 09.30.2026, AMZ Log 09.30.2026 | gray |
 | Reference | BOM, AMZ SKU Map, SKU List | blue |
 | Helpers | Bundle Map, Kit Consumption | purple |
@@ -58,8 +58,8 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
 - **4.1 ADS Starting** = last month's ADS ending snapshot (`ADS Ending Balance <last month end>.csv` in last month's folder). It is also copied into this month's folder as `ADS Starting Balance <date>.csv`.
 - **4.2 AMZ Starting** = the rows of **this month's** ledger dated the **1st of the month** (all warehouses, all dispositions). The value used is *Starting Warehouse Balance* **plus units travelling between Amazon warehouses** at the start of the 1st (the 1st's *In Transit Between Warehouses* + its *Warehouse Transfer In/Out*, because Amazon's In Transit figure is end-of-day). Those units are DairyPill's; leaving them out made October's Amazon Delta +704 instead of +3. Last month's ledger is not needed.
 - **4.2a Tie-out (warning only):** if last month's ledger is found (`AMZ Inventory Ledger <last month end>.csv` in last month's folder, or on the first run a ledger in the `Starting Balances` subfolder), Checks compares, per Amazon SKU (our SKU after the AMZ SKU Map, e.g. `A0030 - TEMP SKU` shows as `A0030`), its *Ending Warehouse Balance + In Transit Between Warehouses* on last month's final day with this month's Amazon Beginning (rule 4.2). Any difference is a FLAG on Checks; the run never stops for it. If no last-month ledger is found, Checks says it was not compared.
-- **4.3 MFG Starting** = last month's MFG Inventory tab (MFG, SKU, EOM Qty), copied from last month's workbook.
-- **4.4** First run (no last-month folder/workbook): ADS comes from the `Starting Balances` subfolder; MFG Starting is created empty for you to type (Checks flags it until you do). Amazon needs nothing extra (rule 4.2).
+- **4.3 MFG Starting** = last month's MFG Counts tab (MFG, SKU, EOM Qty), copied from last month's workbook. If last month's workbook exists but has no MFG Counts tab, the run stops.
+- **4.4** First run (no last-month folder/workbook): ADS comes from the `Starting Balances` subfolder (or rule 2.2a); MFG Starting = the *Raw Material - Component* rows of the first-run (hand-built) workbook's Variance Overview (*Location*, *SKU*, *Actual Ending Inventory*) — nothing to type. Amazon needs nothing extra (rule 4.2).
 
 ## 5. Raw reports: what is kept and what is changed
 
@@ -97,7 +97,7 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
 
 ## 7. Tabs you type in (created once with headers, never overwritten)
 
-- **7.1 MFG Inventory** — `MFG | SKU | Received Qty | EOM Qty`. Every MFG name (VitaQuest, VitaPros, or a new one) automatically gets its own block.
+- **7.1 MFG Counts** — `MFG | SKU | EOM Qty | Received Qty` (Received optional, blank = 0). When the tab is created it already lists the MFG + SKU of every row with a non-zero starting balance (rule 4.3/4.4), quantities blank. Type the quantities, add new MFG/SKU rows at the bottom, and reorder rows freely — the MFG section of Variance Overview and Inventory Valuation follows this tab row by row (rule 9.5), with no rerun.
 - **7.2 ADS Receipts** — `PO Number | SKU | Qty`.
 - **7.3 Prepaid** — carried from last month; feeds nothing.
 
@@ -108,29 +108,30 @@ Dates are written `MM.DD.YYYY` because Excel forbids "/" in tab names and limits
 
 ## 9. Variance Overview
 
-- **9.1** Blocks in this order: **ADS → Amazon → one block per MFG** (alphabetical). Each block = a gray header row, one row per SKU (A→Z), and a `Subtotal – <location>` row that adds the rows **between that block's header and its subtotal**.
+- **9.1** Blocks in this order: **ADS → Amazon → MFG** (one section; rule 9.5). Each block = a gray header row, one row per SKU (A→Z), and a `Subtotal – <location>` row that adds the rows **between that block's header and its subtotal**.
 - **9.2 Which SKUs get a row** (nothing is typed):
   - **ADS:** every SKU in ADS Starting, ADS Ending, ADS Receipts, Work Orders (kits built), the two Ops Hub logs, or Bundle Map components. Kit components only reduce SKUs already in this list — e.g. 70001/70003 inside a kit never create ADS rows.
   - **Amazon:** every *mapped* SKU in AMZ Starting, the AMZ ledger, or the Business Report with units > 0.
-  - **Each MFG:** every SKU listed for that MFG on MFG Starting or MFG Inventory.
+  - **MFG:** not a SKU list — row by row from the MFG Counts tab (rule 9.5).
 - **9.3 Columns** (each row in a block has the identical formula pattern, keyed on that row's SKU):
 
 | Column | ADS | Amazon | MFG |
 |---|---|---|---|
-| Beginning | ADS Starting *Qty On Hand* | AMZ Starting *Starting Warehouse Balance* + units between Amazon warehouses (rule 4.2) | MFG Starting *EOM Qty* |
-| Receiving | ADS Receipts *Qty* + Work Orders *Pieces* (kits built) | Ledger *Receipts* (whole month) | MFG Inventory *Received Qty* |
+| Beginning | ADS Starting *Qty On Hand* | AMZ Starting *Starting Warehouse Balance* + units between Amazon warehouses (rule 4.2) | MFG Starting *EOM Qty* (matched by MFG + SKU) |
+| Receiving | ADS Receipts *Qty* + Work Orders *Pieces* (kits built) | Ledger *Receipts* (whole month) | MFG Counts *Received Qty* |
 | Sold / Used | Bundle Map component units (every Shopify channel incl. CX) + `manualorder_log` *Quantity* (every channel) + `amz_log` *Quantity* (shipped to Amazon) + Kit Consumption child units | Ledger *Customer Shipments* (whole month, shown positive) | **Calculated** = Beginning + Receiving − Actual |
 | Expected Ending | Beginning + Receiving − Sold/Used | same | same |
-| Actual Ending | ADS Ending *Qty On Hand* | Ledger *Ending Warehouse Balance* **+ In Transit Between Warehouses** on the **last date** in the file | MFG Inventory *EOM Qty* |
+| Actual Ending | ADS Ending *Qty On Hand* | Ledger *Ending Warehouse Balance* **+ In Transit Between Warehouses** on the **last date** in the file | MFG Counts *EOM Qty* |
 | Delta | Actual − Expected | same | same (always 0) |
 | Avg Cost / Unit | COGS *Total / Unit* | same | same |
 | Expected $ / Actual $ / Delta $ | Expected × cost, Actual × cost, difference | same | same |
 
 - **9.4 Categorization:** ADS and Amazon = "Ending Inventory"; MFG = "Raw Material - Component".
+- **9.5 MFG section.** `MFG_ROWS` rows (50, more if MFG Counts already has more) where row *k* = row *k* of the MFG Counts tab: MFG and SKU are plain cell links (so reordering or adding rows on MFG Counts shows up immediately, in the same order), Beginning / Received / EOM are looked up as in 9.3, Sold / Used = Beginning + Received − EOM, so Delta is 0. Rows with no SKU stay blank. The `Subtotal – MFG` row sits below the 50 rows. More rows on MFG Counts than the section holds is a FLAG on Checks (run `buildEOM` again and it makes room). The formulas are links, IF, SUM and SUMIFS only — no UNIQUE/FILTER/XLOOKUP, which break in older Excel.
 
 ## 10. Inventory Valuation
 
-- **10.1** Same blocks and rows as Variance Overview. Available Inventory = that row's *Actual Ending* on Variance Overview (matched by Location + SKU). COGS / Freight / Tariffs from COGS; Total Inventory Value = Available × (COGS + Freight + Tariffs).
+- **10.1** Same blocks and rows as Variance Overview. Available Inventory = that row's *Actual Ending* on Variance Overview (matched by Location + SKU; the MFG rows mirror Variance Overview's MFG rows one for one). COGS / Freight / Tariffs from COGS; Total Inventory Value = Available × (COGS + Freight + Tariffs).
 - **10.2** The totals box is at the **top** and never moves: each categorization = SUMIFS on the Categorization column; TOTAL = their sum. No fixed row ranges.
 
 ## 11. Outbound Summary
@@ -149,7 +150,7 @@ Each line shows **OK**, **FLAG** (needs attention), **CHECK** (confirm by eye) o
 - **12.3** Amazon rows with no SKU mapping; AMZ SKU Map entries added this run. An ASIN or MSKU whose AMZ SKU Map rows point at different SKUs is a FLAG (only the first matching row is used).
 - **12.4** Shopify lines with no SKU (gift cards etc.; not counted anywhere).
 - **12.5** Rows where Expected Ending Inventory is negative.
-- **12.6** MFG Starting / MFG Inventory filled in; SKUs typed as numbers on the yellow tabs (they must be text to match).
+- **12.6** Where MFG starting balances came from (INFO); MFG Counts rows with a SKU but no EOM Qty (FLAG, updates live); MFG Counts longer than the MFG section (FLAG); SKUs typed as numbers on ADS Receipts (they must be text to match — MFG Counts SKUs are converted automatically).
 - **12.7** Inventory Valuation total = sum of block subtotals.
 - **12.8** Work orders parsed completely (lines = report TOTAL).
 - **12.9** Where the starting balances came from; where the Shopify data came from; files ignored; build time.

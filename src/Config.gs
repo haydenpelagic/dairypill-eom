@@ -51,6 +51,9 @@ var CONFIG = {
   // Rule 2.2a: the tab in that workbook holding its ADS ending snapshot. On a first run with two ADS
   // snapshots in the month folder, the one matching this tab exactly is last month's ending.
   BOOTSTRAP_ADS_TAB: 'ADS 930',
+  // Rule 4.4: first run only — last month's MFG ending balances = the Raw Material rows of that workbook's Variance Overview.
+  BOOTSTRAP_MFG: { tab: 'Variance Overview', mfg: 'Location', sku: 'SKU', category: 'Categorization', qty: 'Actual Ending Inventory',
+                   categoryValue: 'Raw Material - Component' },
 
   // ---- Rule 6.2: which COGS columns the summaries read ------------------------
   COGS_COLUMNS: { key: 'Trim', cogs: 'COGS / Unit', freight: 'Freight / Unit', tariffs: 'Tariffs / Unit', total: 'Total / Unit' },
@@ -112,16 +115,20 @@ var CONFIG = {
   LOCATIONS: {
     ADS: { label: 'ADS',    categorization: 'Ending Inventory' },
     AMZ: { label: 'Amazon', categorization: 'Ending Inventory' },
-    MFG: {                  categorization: 'Raw Material - Component' } // label = the MFG name typed on the MFG Inventory tab
+    MFG: { label: 'MFG',    categorization: 'Raw Material - Component' } // one section; each row's MFG comes from the MFG Counts tab
   },
 
   // ---- Rule 7: manual-entry tab headers ---------------------------------------
   MANUAL_TABS: {
-    MFG_INVENTORY: ['MFG', 'SKU', 'Received Qty', 'EOM Qty'],
+    MFG_COUNTS:    ['MFG', 'SKU', 'EOM Qty', 'Received Qty'], // Rule 7.1: Received Qty optional (blank = 0)
     MFG_STARTING:  ['MFG', 'SKU', 'EOM Qty'],
     ADS_RECEIPTS:  ['PO Number', 'SKU', 'Qty'],
     PREPAID:       ['Prepaid POs', 'Invoice', 'SKU', 'Description', 'Quantity', 'Unit Cost', 'Total Cost', 'Amount Paid']
   },
+
+  // Rule 9.5: rows in the MFG section of Variance Overview / Inventory Valuation. Row k mirrors row k of the
+  // MFG Counts tab; empty rows stay blank. More rows on MFG Counts than this is a FLAG (raise it here).
+  MFG_ROWS: 50,
 
   // Text shown in place of a number when a SKU has no COGS row (Rule 12.1).
   NO_COST_TEXT: 'NO COST',

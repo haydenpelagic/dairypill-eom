@@ -16,7 +16,10 @@ const sheet = (name) => built.sheets.find((s) => s.name === name);
 /** Row (1-based) whose column A and B match, on a summary tab. */
 function findRow(tab, a, b) {
   const v = sheet(tab).values;
-  for (let r = 0; r < v.length; r++) if (v[r][0] === a && (b === undefined || v[r][1] === b)) return r + 1;
+  for (let r = 0; r < v.length; r++) {
+    const cell = (c) => (typeof v[r][c] === 'string' && v[r][c].charAt(0) === '=' ? wb.value(tab, r + 1, c + 1) : v[r][c]); // MFG rows are formulas
+    if (cell(0) === a && (b === undefined || cell(1) === b)) return r + 1;
+  }
   throw new Error('No row ' + a + ' / ' + b + ' on ' + tab);
 }
 const val = (tab, row, colLetter) => wb.value(tab, row, colLetter.charCodeAt(0) - 64);
@@ -44,7 +47,8 @@ test('Rule 9.2: ADS block rows come from the sources, not from a typed list', ()
   assert.deepEqual(ads, ['10030', '20001', '50001', '51002', '80030', '80090', 'A0030']);
   assert.ok(!ads.includes('70001'), 'kit components that are not at ADS must not create rows');
   assert.deepEqual(plain(built.blocks.find((b) => b.kind === 'AMZ').skus), ['50001', 'A0030', 'A80004']);
-  assert.deepEqual(plain(built.blocks.filter((b) => b.kind === 'MFG').map((b) => b.label)), ['VitaPros', 'VitaQuest']);
+  const mfg = built.blocks.filter((b) => b.kind === 'MFG');
+  assert.deepEqual(plain(mfg.map((b) => [b.label, b.rows])), [['MFG', 50]], 'one MFG section, 50 rows');
 });
 
 test('Rule 9.3 ADS: begin / receiving / sold (bundles split, CX included, kits) / actual', () => {
@@ -72,11 +76,39 @@ test('Rule 9.3 Amazon: starting = last month\'s last day; actual = last day of t
   }
 });
 
-test('Rule 9.3 MFG: Used is calculated, so delta is 0', () => {
+test('Rule 9.5 MFG: rows mirror MFG Counts in its order; Used is calculated, so delta is 0', () => {
   const vq = findRow(T.variance, 'VitaQuest', '70003');
-  assert.deepEqual(['E', 'F', 'G', 'H', 'I', 'J'].map((c) => val(T.variance, vq, c)), [100, 50, 30, 120, 120, 0]);
   const vp = findRow(T.variance, 'VitaPros', '70003');
+  assert.equal(vp, vq + 1, 'same order as the MFG Counts tab (VitaQuest typed first)');
+  assert.deepEqual(['E', 'F', 'G', 'H', 'I', 'J'].map((c) => val(T.variance, vq, c)), [100, 50, 30, 120, 120, 0]);
   assert.deepEqual(['E', 'F', 'G', 'H', 'I', 'J'].map((c) => val(T.variance, vp, c)), [0, 300, 0, 300, 300, 0]);
+  assert.equal(val(T.variance, vq, 'D'), 'Raw Material - Component');
+  assert.deepEqual(['A', 'B', 'D', 'E', 'I', 'M'].map((c) => val(T.variance, vp + 1, c)), ['', '', '', '', '', ''], 'unused rows stay blank');
+  const sub = findRow(T.variance, 'Subtotal – MFG');
+  assert.equal(sub, vq + 50, 'subtotal after the 50 MFG rows');
+  assert.equal(val(T.variance, sub, 'I'), 420);
+  // Valuation mirrors the same rows
+  const v1 = findRow(T.valuation, 'VitaQuest', '70003');
+  assert.equal(val(T.valuation, v1, 'E'), 120);
+  assert.equal(val(T.valuation, v1 + 1, 'E'), 300);
+});
+
+test('Rule 9.5 / 7.1: a row typed at the bottom of MFG Counts (SKU as a number, no Received) shows up without a rebuild', () => {
+  const counts = sheet(T.mfgInv).values;
+  const w = workbookFromModels(built.sheets.map((s) => (s.name === T.mfgInv ? Object.assign({}, s, { values: counts.concat([['VitaQuest', 70001, 40, '']]) }) : s)));
+  const vq = findRow(T.variance, 'VitaQuest', '70003');
+  const v = (row, c) => w.value(T.variance, row, c.charCodeAt(0) - 64);
+  assert.deepEqual(['A', 'B', 'E', 'F', 'G', 'I', 'J'].map((c) => v(vq + 2, c)), ['VitaQuest', '70001', 0, 0, -40, 40, 0]);
+  assert.equal(w.value(T.variance, findRow(T.variance, 'Subtotal – MFG'), 9), 460);
+});
+
+test('Rule 7.1 / 4.4: a new MFG Counts tab starts with last month\'s MFG + SKU rows (non-zero), quantities blank', () => {
+  const b = L.buildWorkbookModel_(sampleInputs(L, { mfgInv: null, mfgStart: [['VitaQuest', '70003', 800], ['VitaPros', 70003, 300], ['VitaPros', '70009', 0]] }));
+  assert.deepEqual(plain(b.sheets.find((s) => s.name === T.mfgInv).values),
+    [['MFG', 'SKU', 'EOM Qty', 'Received Qty'], ['VitaQuest', '70003', '', ''], ['VitaPros', '70003', '', '']]);
+  const boot = [['Code', 'Location', 'SKU', 'Categorization', 'Actual Ending Inventory'], ['ADS1', 'ADS', '1', 'Ending Inventory', '5'],
+    ['VitaPros70003', 'VitaPros', '70003', 'Raw Material - Component', '300'], ['VitaQuest70003', 'VitaQuest', '70003', 'Raw Material - Component', '800']];
+  assert.deepEqual(plain(L.mfgStartFromBootstrap_(boot)), [['VitaPros', '70003', 300], ['VitaQuest', '70003', 800]]);
 });
 
 test('Rule 9.3 costs and missing COGS', () => {
@@ -130,7 +162,8 @@ test('Rule 12: checks flag what is wrong and pass what is right', () => {
   assert.match(result('Shopify lines with no SKU (not counted anywhere)'), /^FLAG: 1 /);
   assert.equal(result('Rows where Expected Ending Inventory is negative'), 'OK');
   assert.equal(result('Inventory Valuation total = sum of block subtotals'), 'OK');
-  assert.equal(result('MFG Inventory filled in'), 'OK');
+  assert.equal(result('MFG Counts filled in'), 'OK');
+  assert.equal(result('MFG Counts fits the MFG section'), 'OK');
   const map = rows.find((x) => x[1] === 'AMZ SKU Map entries added this run');
   assert.match(map[3], /A80002 \(B2\) → A80004/);
   assert.match(map[3], /A0030 - TEMP SKU \(B1\) → A0030/);
@@ -152,8 +185,6 @@ test('manual tabs are preserved on rebuild; summaries are not', () => {
   for (const name of [T.mfgInv, T.adsReceipts, T.prepaid, T.cogs]) assert.equal(sheet(name).preserveIfExists, true, name);
   for (const name of [T.variance, T.valuation, T.outbound, T.checks, T.ledger]) assert.equal(sheet(name).preserveIfExists, false, name);
   assert.equal(sheet(T.mfgStart).preserveIfExists, false, 'MFG Starting is regenerated when last month exists');
-  const first = L.buildWorkbookModel_(sampleInputs(L, { mfgStartFromPrev: false, mfgStart: [] }));
-  assert.equal(first.sheets.find((s) => s.name === T.mfgStart).preserveIfExists, true, 'first run: you type MFG Starting');
 });
 
 test('raw tabs: SKU columns are text, quantities numbers, ledger dates real dates', () => {

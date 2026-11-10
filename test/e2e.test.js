@@ -1,7 +1,7 @@
 'use strict';
 // Runs the REAL entry points (buildEOM / shopifyOnly) against an in-memory Google Drive:
 //   1. first run for September (Starting Balances subfolder, first-run COGS workbook)
-//   2. you type MFG Inventory + ADS Receipts, run again (manual tabs kept, MFG blocks appear)
+//   2. you type MFG Counts + ADS Receipts (summaries update live), run again (typed tabs kept)
 //   3. October, carried forward from September (ADS/AMZ/MFG starting balances, COGS, SKU map)
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -45,7 +45,10 @@ function calc(ss) {
 }
 function rowOf(ss, tab, a, b) {
   const v = ss.getSheetByName(tab).rawValues();
-  const i = v.findIndex((r) => r[0] === a && (b === undefined || r[1] === b));
+  const isF = (x) => typeof x === 'string' && x.charAt(0) === '=';
+  const wb = v.some((r) => isF(r[0])) ? calc(ss) : null; // MFG rows are formulas linking to MFG Counts
+  const cell = (r, i, c) => (isF(r[c]) ? wb.value(tab, i + 1, c + 1) : r[c]);
+  const i = v.findIndex((r, k) => cell(r, k, 0) === a && (b === undefined || cell(r, k, 1) === b));
   if (i < 0) throw new Error('No row ' + a + '/' + b + ' on ' + tab);
   return i + 1;
 }
@@ -73,6 +76,10 @@ const makeBootWb = () => gas.spreadsheetWithId(ctx.CONFIG.BOOTSTRAP_WORKBOOK_ID,
   Prepaid: [['Prepaid POs', 'Invoice', 'SKU'], ['POUCHES-26', '102973', '80030']],
   // Rule 2.2a: the hand-built workbook's ADS ending tab — a title row, a blank row, then the snapshot
   // (rows in a different order and quantities as numbers, as Sheets returns them).
+  // Rule 4.4: last month's MFG ending balances come from the Raw Material rows of its Variance Overview.
+  'Variance Overview': [['Code', 'Location', 'SKU', 'TRIM', 'Description', 'Categorization', 'Beginning Inventory', 'Actual Ending Inventory'],
+    ['ADS80090', 'ADS', '80090', '80090', '90ct', 'Ending Inventory', '1', '200'],
+    ['VitaQuest70003', 'VitaQuest', '70003', '70003', 'Lactase', 'Raw Material - Component', '0', '100']],
   'ADS 930': [['9/30/26'], ['']].concat([rawSep.adsStart[0]], rawSep.adsStart.slice(1).reverse().map((r) => r.map((v, i) => (i === 7 ? Number(v) : v))))
 });
 const bootWb = makeBootWb();
@@ -122,11 +129,13 @@ test('1. first run for September builds the full workbook', () => {
   // COGS copied from the first-run workbook with its formulas
   assert.equal(ss.getSheetByName('COGS').rawValues()[1][0], '=TRIM(B2)');
   assert.equal(wb.value(tabs.variance, r, 11), 6.9);
-  // First run: MFG tabs are empty → flagged
+  // First run: MFG start comes from the hand-built workbook; MFG Counts is pre-filled with its rows, quantities to type
   const checks = ss.getSheetByName(tabs.checks).rawValues();
   const res = (label) => wb.value(tabs.checks, checks.findIndex((x) => x[1] === label) + 1, 3);
-  assert.match(res('MFG Inventory filled in'), /^FLAG/);
-  assert.match(res('MFG Starting Balance filled in'), /^FLAG/);
+  assert.deepEqual(ss.getSheetByName(tabs.mfgInv).rawValues(), [['MFG', 'SKU', 'EOM Qty', 'Received Qty'], ['VitaQuest', '70003', '', '']]);
+  assert.deepEqual(ss.getSheetByName(tabs.mfgStart).rawValues().slice(1), [['VitaQuest', '70003', 100]]);
+  assert.equal(res('MFG Counts filled in'), 'FLAG: 1 rows with a SKU but no EOM Qty');
+  assert.match(checks.find((x) => x[1] === 'MFG starting balances')[3], /First run: the "Raw Material - Component" rows of "Variance Overview"/);
   assert.match(checks.find((x) => x[1] === 'Starting balances came from')[3], /Starting Balances" subfolder \(first run\)/);
   // Rule 4.2a: optional August ledger in Starting Balances ties to September's 9/1 starting balance
   const tie = checks.find((x) => x[1] === 'Amazon starting balance = last month\'s ending');
@@ -135,12 +144,16 @@ test('1. first run for September builds the full workbook', () => {
   assert.match(checks.find((x) => x[1] === 'Files in the folder that were ignored')[3], /notes\.pdf/);
 });
 
-test('2. typing MFG Inventory + ADS Receipts and running again keeps what you typed', () => {
+test('2. typing MFG Counts + ADS Receipts: summaries update without a rerun; running again keeps what you typed', () => {
   const ss = findFile(sep, 'DAIRYPILL_EOM COGS - September 2026').ss;
   const tabs = ctx.tabNames_(ctx.monthInfo_(2026, 8));
   const mfg = ss.getSheetByName(tabs.mfgInv);
-  mfg.getRange(2, 1, 2, 4).setValues([['VitaQuest', '70003', 50, 120], ['VitaPros', '70003', 300, 300]]);
-  ss.getSheetByName(tabs.mfgStart).getRange(2, 1, 1, 3).setValues([['VitaQuest', '70003', 100]]);
+  mfg.getRange(2, 1, 2, 4).setValues([['VitaQuest', '70003', 120, 50], ['VitaPros', '70003', 300, 300]]); // new VitaPros row added at the bottom
+  // no rerun needed: the MFG section already shows both rows
+  const live = calc(ss);
+  const vpLive = rowOf(ss, tabs.variance, 'VitaPros', '70003');
+  assert.deepEqual(COLS.map((c) => live.value(tabs.variance, vpLive, c)), [0, 300, 0, 300, 300, 0]);
+  assert.equal(live.value(tabs.valuation, rowOf(ss, tabs.valuation, 'VitaPros', '70003'), 5), 300);
   ss.getSheetByName(tabs.adsReceipts).getRange(2, 1, 1, 3).setValues([['PO-1', '50001', 10]]);
   ss.getSheetByName('COGS').getRange(12, 1, 1, 8).setValues([['=TRIM(B12)', 'A80004', '', '', 1, 0.03, 0, 1.03]]); // you add a missing cost
 
@@ -158,7 +171,7 @@ test('2. typing MFG Inventory + ADS Receipts and running again keeps what you ty
   assert.equal(wb.value(tabs.variance, a8, 11), 1.03, 'your COGS edit is used');
   const checks = ss2.getSheetByName(tabs.checks).rawValues();
   const res = (label) => wb.value(tabs.checks, checks.findIndex((x) => x[1] === label) + 1, 3);
-  assert.equal(res('MFG Inventory filled in'), 'OK');
+  assert.equal(res('MFG Counts filled in'), 'OK');
   assert.equal(res('SKUs with no COGS cost'), 'OK');
   assert.match(checks.find((x) => x[1] === 'Shopify data came from')[3], /reused/);
   // nothing anywhere evaluates to an error
@@ -198,7 +211,8 @@ test('3. October carries everything forward from September (first-run workbook n
   assert.doesNotMatch(tieRow[3], /TEMP SKU/);
   assert.match(tieRow[3], /50001: 09\/30\/2026 ending 4 vs 10\/01\/2026 starting 0 \(-4\)/);
   assert.match(tieRow[3], /AMZ Inventory Ledger 09\.30\.2026\.csv" in the September 2026 folder/);
-  // MFG start = September's MFG Inventory EOM
+  // MFG start = September's MFG Counts EOM; October's MFG Counts starts with those rows, in order
+  assert.deepEqual(ss.getSheetByName(tabs.mfgInv).rawValues().slice(1), [['VitaQuest', '70003', '', ''], ['VitaPros', '70003', '', '']]);
   const vq = rowOf(ss, tabs.variance, 'VitaQuest', '70003');
   assert.equal(wb.value(tabs.variance, vq, COLS[0]), 120);
   const vp = rowOf(ss, tabs.variance, 'VitaPros', '70003');

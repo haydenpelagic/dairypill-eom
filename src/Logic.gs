@@ -276,7 +276,7 @@ function tabNames_(m) {
     workOrders: 'Work Orders ' + m.endStr,
     manualLog: 'Manual Order Log ' + m.endStr,
     amzLog: 'AMZ Log ' + m.endStr,
-    mfgInv: 'MFG Inventory ' + m.endStr,
+    mfgInv: 'MFG Counts ' + m.endStr,
     adsReceipts: 'ADS Receipts ' + m.endStr,
     prepaid: 'Prepaid',
     bom: 'BOM',
@@ -939,6 +939,25 @@ function skuMapModel_(name, rows) {
 }
 
 /** Header-only manual tab (Rule 7), created once and never overwritten. */
+/** Rule 4.4: first run — [[mfg, sku, qty]] from the Raw Material rows of the hand-built workbook's Variance Overview. */
+function mfgStartFromBootstrap_(values) {
+  var B = CONFIG.BOOTSTRAP_MFG, label = 'the first-run workbook\'s "' + B.tab + '" tab';
+  var hr = -1;
+  for (var i = 0; i < Math.min(values.length, 10); i++) if (headerIndex_(values[i], B.category) >= 0) { hr = i; break; }
+  if (hr < 0) throw new Error('Could not find the "' + B.category + '" column in ' + label + '.');
+  var h = values[hr];
+  var mi = requireHeader_(h, B.mfg, label), si = requireHeader_(h, B.sku, label), ci = requireHeader_(h, B.category, label), qi = requireHeader_(h, B.qty, label);
+  return values.slice(hr + 1).filter(function (r) { return textCell_(r[ci]).trim() === B.categoryValue && cleanSku_(r[si]) !== ''; })
+    .map(function (r, k) { return [textCell_(r[mi]).trim(), cleanSku_(r[si]), toNumber_(r[qi], 'in ' + label + ' (' + B.qty + '), MFG row ' + (k + 1))]; });
+}
+
+/** Rule 7.1: the MFG Counts tab. New tab = pre-filled with MFG + SKU of every row with a starting balance (quantities blank). */
+function mfgCountsRows_(inputs) {
+  if (inputs.mfgInv) return inputs.mfgInv;
+  return (inputs.mfgStart || []).filter(function (r) { return Number(r[2]) !== 0 && cleanSku_(r[1]) !== ''; })
+    .map(function (r) { return [r[0], cleanSku_(r[1]), '', '']; });
+}
+
 function manualTabModel_(name, header, rows, numericCols) {
   numericCols = numericCols || [];
   var values = [header].concat((rows || []).map(function (r, i) {
@@ -1065,10 +1084,36 @@ function amzLastDayFormula_(ctx, skuCell, keys) {
   }).join('+');
 }
 
+/**
+ * Rule 9.5: MFG section row = row `k` of the MFG Counts tab (plain cell links, so reordering that tab reorders
+ * this section). Blank SKU on MFG Counts = blank row here. Used is calculated: Beginning + Received − EOM.
+ */
+function mfgVarianceRow_(ctx, b, r, k) {
+  var t = ctx.tabs, C = q2_(t.mfgInv) + '!', S = '$B' + r;
+  var blankIf = function (expr) { return '=IF(' + S + '="","",' + expr + ')'; };
+  var inner = function (f) { return f.charAt(0) === '=' ? f.slice(1) : f; };
+  return [
+    '=IF(' + C + 'B' + k + '="","",' + C + 'A' + k + '&"")',
+    '=IF(' + C + 'B' + k + '="","",' + C + 'B' + k + '&"")', // &"" = always text, so 70003 typed as a number still matches
+    blankIf(inner(descLookup_(ctx, S))),
+    blankIf(q_(b.categorization)),
+    blankIf('SUMIFS(' + colRef_(t.mfgStart, 'C') + ',' + colRef_(t.mfgStart, 'A') + ',$A' + r + ',' + colRef_(t.mfgStart, 'B') + ',' + S + ')'),
+    blankIf('SUM(' + C + 'D' + k + ')'),
+    blankIf('E' + r + '+F' + r + '-I' + r),
+    blankIf('E' + r + '+F' + r + '-G' + r),
+    blankIf('SUM(' + C + 'C' + k + ')'),
+    blankIf('I' + r + '-H' + r),
+    blankIf(inner(costLookup_(ctx, 'total', S))),
+    blankIf('IF(H' + r + '=0,0,IFERROR(H' + r + '*K' + r + ',' + q_(CONFIG.NO_COST_TEXT) + '))'),
+    blankIf('IF(I' + r + '=0,0,IFERROR(I' + r + '*K' + r + ',' + q_(CONFIG.NO_COST_TEXT) + '))'),
+    blankIf('IFERROR(M' + r + '-L' + r + ',' + q_(CONFIG.NO_COST_TEXT) + ')')
+  ];
+}
+
 var BLOCK_EXPLANATIONS = {
   ADS: 'rows = every SKU in ADS start/end snapshots, ADS Receipts, Work Orders, the Ops Hub shipment logs or Shopify sales (Rule 9.2)',
   AMZ: 'rows = every mapped SKU in AMZ Starting Balance, AMZ Inventory Ledger or Business Report sales (Rule 9.2)',
-  MFG: 'rows = every SKU for this MFG on MFG Starting Balance or MFG Inventory; Sold / Used is calculated (Rule 9.3)'
+  MFG: 'row by row = the MFG Counts tab, in its order (add or reorder rows there); Sold / Used is calculated (Rule 9.5)'
 };
 
 function varianceModel_(ctx, blocks) {
@@ -1080,11 +1125,15 @@ function varianceModel_(ctx, blocks) {
   ];
   var blockRows = [], subtotalRows = [];
   blocks.forEach(function (b) {
-    if (!b.skus.length) return;
+    if (b.kind !== 'MFG' && !b.skus.length) return;
     values.push(['▼ ' + b.label + ' — ' + BLOCK_EXPLANATIONS[b.kind]]);
     blockRows.push(values.length);
     var first = values.length + 1;
-    b.skus.forEach(function (sku) {
+    if (b.kind === 'MFG') {
+      for (var k = 0; k < b.rows; k++) values.push(mfgVarianceRow_(ctx, b, values.length + 1, k + 2));
+      b.firstRow = first;
+    }
+    (b.kind === 'MFG' ? [] : b.skus).forEach(function (sku) {
       var r = values.length + 1;
       var f = varianceSourceFormulas_(b.kind, ctx, r);
       values.push([b.label, sku, descLookup_(ctx, '$B' + r), b.categorization,
@@ -1107,8 +1156,10 @@ function varianceModel_(ctx, blocks) {
   });
   var nf = numFmts_(4, 9, '#,##0.####;-#,##0.####;0');
   nf[10] = '$#,##0.00'; nf[11] = '$#,##0.00'; nf[12] = '$#,##0.00'; nf[13] = '$#,##0.00';
+  var mfgBlock = blocks.filter(function (b) { return b.kind === 'MFG'; })[0];
   return model_(ctx.tabs.variance, values, {
-    textCols: [1], textFromRow: VARIANCE_HEADER_ROW + 1, numberFormats: nf, numberFromRow: VARIANCE_HEADER_ROW + 1,
+    textCols: [1], textFromRow: VARIANCE_HEADER_ROW + 1,
+    textToRow: mfgBlock ? mfgBlock.firstRow - 1 : null, // MFG rows are formulas (a text-formatted cell would show the formula as text) numberFormats: nf, numberFromRow: VARIANCE_HEADER_ROW + 1,
     headerRows: [VARIANCE_HEADER_ROW], titleRows: [1], blockRows: blockRows, subtotalRows: subtotalRows,
     frozenRows: VARIANCE_HEADER_ROW, tabColor: TAB_COLORS.summary
   });
@@ -1142,13 +1193,27 @@ function valuationModel_(ctx, blocks) {
   values.push([]);
   values.push(VALUATION_HEADER.slice());
   var headerRow = values.length;
-  var blockRows = [], subtotalRows = [];
+  var blockRows = [], subtotalRows = [], mfgFirst = null;
   blocks.forEach(function (b) {
-    if (!b.skus.length) return;
+    if (b.kind !== 'MFG' && !b.skus.length) return;
     values.push(['▼ ' + b.label + ' — Available Inventory = Actual Ending Inventory on Variance Overview']);
     blockRows.push(values.length);
     var first = values.length + 1;
-    b.skus.forEach(function (sku) {
+    if (b.kind === 'MFG') {
+      mfgFirst = first;
+      // Rule 10.1: row k mirrors MFG row k on Variance Overview.
+      for (var k = 0; k < b.rows; k++) {
+        var r = values.length + 1, vr = b.firstRow + k, V = q2_(t.variance) + '!', S = '$B' + r;
+        var bi = function (expr) { return '=IF(' + S + '="","",' + expr + ')'; };
+        var inner = function (f) { return f.slice(1); };
+        values.push(['=IF(' + V + 'B' + vr + '="","",' + V + 'A' + vr + ')', '=IF(' + V + 'B' + vr + '="","",' + V + 'B' + vr + ')',
+          bi(inner(descLookup_(ctx, S))), bi(q_(b.categorization)), bi(V + 'I' + vr),
+          bi(inner(costLookup_(ctx, 'cogs', S))), bi(inner(costLookup_(ctx, 'freight', S))), bi(inner(costLookup_(ctx, 'tariffs', S))),
+          bi('IFERROR(F' + r + '+G' + r + '+H' + r + ',' + q_(CONFIG.NO_COST_TEXT) + ')'),
+          bi('IF(E' + r + '=0,0,IFERROR(E' + r + '*I' + r + ',' + q_(CONFIG.NO_COST_TEXT) + '))')]);
+      }
+    }
+    (b.kind === 'MFG' ? [] : b.skus).forEach(function (sku) {
       var r = values.length + 1;
       values.push([b.label, sku, descLookup_(ctx, '$B' + r), b.categorization,
         '=SUMIFS(' + colRef_(t.variance, 'I') + ',' + colRef_(t.variance, 'A') + ',$A' + r + ',' + colRef_(t.variance, 'B') + ',$B' + r + ')',
@@ -1162,7 +1227,8 @@ function valuationModel_(ctx, blocks) {
   });
   var nf = { 4: '#,##0.####', 5: '$#,##0.00', 6: '$#,##0.00', 7: '$#,##0.00', 8: '$#,##0.00', 9: '$#,##0.00' };
   var m = model_(t.valuation, values, {
-    textCols: [1], textFromRow: headerRow + 1, numberFormats: nf, numberFromRow: headerRow + 1,
+    textCols: [1], textFromRow: headerRow + 1, textToRow: mfgFirst ? mfgFirst - 1 : null,
+    numberFormats: nf, numberFromRow: headerRow + 1,
     headerRows: [headerRow], titleRows: [1], blockRows: blockRows, subtotalRows: subtotalRows.concat([totalRow]),
     frozenRows: headerRow, tabColor: TAB_COLORS.summary,
     extraFormats: [{ row: 2, col: 2, rows: cats.length + 1, cols: 1, format: '$#,##0.00' }]
@@ -1275,11 +1341,15 @@ function checksModel_(ctx, info) {
     flagIf_('COUNTIFS(' + colRef_(t.shopify, c.shop.sku) + ',"",' + colRef_(t.shopify, c.shop.name) + ',"<>")', 'lines'), '');
   add('12.5', 'Rows where Expected Ending Inventory is negative', flagIf_('COUNTIF(' + colRef_(t.variance, 'H') + ',"<0")',
     'rows — more went out than came in; check kitting, receipts or starting balance'), 'Filter Variance Overview column H for values below 0.');
-  add('12.6', 'MFG Starting Balance filled in', '=IF(COUNTA(' + colRef_(t.mfgStart, 'A') + ')<=1,"FLAG: empty — type last month\'s MFG EOM quantities, then run again","OK")',
-    info.mfgStartSource);
-  add('12.6', 'MFG Inventory filled in', '=IF(COUNTA(' + colRef_(t.mfgInv, 'A') + ')<=1,"FLAG: empty — type VitaQuest/VitaPros quantities, then run again","OK")', '');
-  add('7', 'SKUs typed as numbers on the yellow tabs', flagIf_('(COUNT(' + colRef_(t.mfgInv, 'B') + ')+COUNT(' + colRef_(t.adsReceipts, 'B') + ')+COUNT(' +
-    colRef_(t.mfgStart, 'B') + '))', 'SKU cells are stored as numbers — format the SKU column as Plain text and retype them'), '');
+  var mfgB = colRef_(t.mfgInv, 'B'), mfgC = colRef_(t.mfgInv, 'C');
+  add('12.6', 'MFG starting balances', 'INFO', info.mfgStartSource);
+  add('12.6', 'MFG Counts filled in', '=IF(COUNTA(' + mfgB + ')<=1,"CHECK: no MFG rows — correct only if no MFG holds stock",IF(COUNTIFS(' + mfgB + ',"<>",' + mfgC +
+    ',"")>0,"FLAG: "&COUNTIFS(' + mfgB + ',"<>",' + mfgC + ',"")&" rows with a SKU but no EOM Qty","OK"))',
+    'Type each EOM Qty on ' + t.mfgInv + ' (Received Qty is optional). Variance Overview and Inventory Valuation update as you type.');
+  add('9.5', 'MFG Counts fits the MFG section', '=IF(COUNTA(' + mfgB + ')-1>' + info.mfgRows + ',"FLAG: "&(COUNTA(' + mfgB + ')-1)&" rows on ' +
+    t.mfgInv + ' but the MFG section has ' + info.mfgRows + ' — run buildEOM again (it makes room)","OK")', '');
+  add('7', 'SKUs typed as numbers on the yellow tabs', flagIf_('COUNT(' + colRef_(t.adsReceipts, 'B') + ')',
+    'SKU cells are stored as numbers — format the SKU column as Plain text and retype them'), '');
   add('7.2', 'ADS Receipts entered', '=IF(COUNTA(' + colRef_(t.adsReceipts, 'A') + ')<=1,"CHECK: none entered — correct only if ADS received nothing","OK")', '');
   add('12.7', 'Inventory Valuation total = sum of block subtotals',
     '=IF(ABS(' + q2_(t.valuation) + '!' + ctx.valuationTotalCell + '-SUMIF(' + colRef_(t.valuation, 'A') + ',"Subtotal*",' + colRef_(t.valuation, 'J') + '))<0.01,"OK","FLAG: totals do not tie")', '');
@@ -1359,12 +1429,12 @@ function readmeModel_(ctx) {
   var t = ctx.tabs;
   var rows = [['Tab', 'What it is', 'Rule (RULES.md)'],
     [t.checks, 'QC only: automatic checks. Anything that says FLAG needs attention. Delete this tab before sending — nothing points at it.', '12'],
-    [t.variance, 'Beginning + Receiving − Sold/Used = Expected; compared with Actual. Blocks: ADS, Amazon, one per MFG.', '9'],
+    [t.variance, 'Beginning + Receiving − Sold/Used = Expected; compared with Actual. Blocks: ADS, Amazon, MFG (row by row from MFG Counts).', '9'],
     [t.valuation, 'Actual ending units × COGS cost. Totals box at the top.', '10'],
     [t.outbound, 'Units and cost by channel for every SKU sold.', '11'],
-    [t.mfgInv, 'YOU TYPE: MFG, SKU, Received Qty, EOM Qty. Never overwritten.', '7.1'],
+    [t.mfgInv, 'YOU TYPE: EOM Qty (and Received Qty if any) per MFG + SKU. Starts with last month\'s MFG + SKU rows; add new ones at the bottom, reorder freely. Never overwritten.', '7.1'],
     [t.adsReceipts, 'YOU TYPE: PO Number, SKU, Qty received at ADS. Never overwritten.', '7.2'],
-    [t.mfgStart, 'Last month\'s MFG EOM quantities (typed by you on the first run only).', '4.3'],
+    [t.mfgStart, 'Last month\'s MFG EOM quantities (from last month\'s MFG Counts; first run: the hand-built workbook).', '4.3'],
     [t.prepaid, 'YOU TYPE: prepaid POs. Feeds nothing.', '7.3'],
     [t.cogs, 'Unit costs. Carried from last month; edit here.', '6.2'],
     [t.skuMap, 'Amazon MSKU / ASIN → our SKU. New Amazon SKUs are added automatically.', '6.3'],
@@ -1400,7 +1470,7 @@ function readmeModel_(ctx) {
  *   bomValues  : raw values from the Ops Hub BOM columns
  *   cogs       : {header, rows}                 (values)
  *   skuMapExisting : [[msku, asin, sku, note]]
- *   mfgInv : [[mfg, sku, recv, eom]], mfgStart : [[mfg, sku, eom]], mfgStartFromPrev : bool
+ *   mfgInv : [[mfg, sku, eom, recv]] | null (null = MFG Counts tab not created yet), mfgStart : [[mfg, sku, eom]], mfgStartFromPrev : bool
  *   adsReceipts : [[po, sku, qty]]
  *   prepaid : {header, rows} | null
  *   copyFrom : {cogs, prepaid}   (where to copy those tabs from if they don't exist yet)
@@ -1503,18 +1573,14 @@ function buildWorkbookModel_(inputs) {
   });
   var amzSkus = uniqueSorted_(amzFromLedger.concat(amzFromBiz).filter(function (s) { return s; }));
 
-  var mfgGroups = {};
-  (inputs.mfgStart || []).concat(inputs.mfgInv || []).forEach(function (r) {
-    var name = String(r[0] === undefined ? '' : r[0]).trim(), sku = cleanSku_(r[1]);
-    if (!name || !sku) return;
-    (mfgGroups[name] = mfgGroups[name] || []).push(sku);
-  });
+  // Rule 9.5: one MFG section; its rows mirror the MFG Counts tab row by row.
+  var mfgCounts = mfgCountsRows_(inputs);
+  var mfgSkus = uniqueSorted_(mfgCounts.map(function (r) { return cleanSku_(r[1]); }));
 
   var blocks = [{ kind: 'ADS', label: CONFIG.LOCATIONS.ADS.label, categorization: CONFIG.LOCATIONS.ADS.categorization, skus: adsSkus },
     { kind: 'AMZ', label: CONFIG.LOCATIONS.AMZ.label, categorization: CONFIG.LOCATIONS.AMZ.categorization, skus: amzSkus }];
-  uniqueSorted_(Object.keys(mfgGroups)).forEach(function (name) {
-    blocks.push({ kind: 'MFG', label: name, categorization: CONFIG.LOCATIONS.MFG.categorization, skus: uniqueSorted_(mfgGroups[name]) });
-  });
+  blocks.push({ kind: 'MFG', label: CONFIG.LOCATIONS.MFG.label, categorization: CONFIG.LOCATIONS.MFG.categorization, skus: mfgSkus,
+    rows: Math.max(CONFIG.MFG_ROWS, mfgCounts.length + 10) });
 
   // Rule 11.1: Amazon SKUs on Outbound = mapped SKUs with Customer Shipments in the ledger.
   var shipI = headerIndex_(inputs.ledger.header, C.LEDGER.shipments), mskuI = headerIndex_(inputs.ledger.header, C.LEDGER.msku);
@@ -1558,6 +1624,7 @@ function buildWorkbookModel_(inputs) {
     startSources: (inputs.sources && inputs.sources.startSources) || '',
     shopifySource: (inputs.sources && inputs.sources.shopifySource) || '',
     mfgStartSource: (inputs.sources && inputs.sources.mfgStartSource) || '',
+    mfgRows: blocks[blocks.length - 1].rows,
     ignoredFiles: inputs.ignoredFiles || [],
     opsLogs: { manual: inputs.manualLog, amz: inputs.amzLog },
     builtAt: inputs.builtAt || inputs.todayStr
@@ -1566,7 +1633,7 @@ function buildWorkbookModel_(inputs) {
 
   // --- manual / carried tabs
   var H = CONFIG.MANUAL_TABS;
-  var mfgInvM = manualTabModel_(tabs.mfgInv, H.MFG_INVENTORY, inputs.mfgInv, [2, 3]);
+  var mfgInvM = manualTabModel_(tabs.mfgInv, H.MFG_COUNTS, mfgCounts, [2, 3]);
   var mfgStartM = manualTabModel_(tabs.mfgStart, H.MFG_STARTING, inputs.mfgStart, [2]);
   if (inputs.mfgStartFromPrev) { mfgStartM.preserveIfExists = false; mfgStartM.tabColor = TAB_COLORS.raw; }
   var adsRecM = manualTabModel_(tabs.adsReceipts, H.ADS_RECEIPTS, inputs.adsReceipts, [2]);

@@ -136,7 +136,7 @@ function sampleInputs(ctx, overrides) {
     skuMapExisting: [],
     mfgStart: [['VitaQuest', '70003', 100]],
     mfgStartFromPrev: true,
-    mfgInv: [['VitaQuest', '70003', 50, 120], ['VitaPros', '70003', 300, 300]],
+    mfgInv: [['VitaQuest', '70003', 120, 50], ['VitaPros', '70003', 300, 300]], // MFG Counts: MFG, SKU, EOM Qty, Received Qty
     adsReceipts: [['PO-1', '50001', 10]],
     sources: { startSources: 'test', shopifySource: 'test', mfgStartSource: 'test' },
     ignoredFiles: []

@@ -91,23 +91,33 @@ function buildEOMFor_(monthText) {
   var mapSheet = sheetByName_(ss, tabs.skuMap) || (prevSs && sheetByName_(prevSs, tabs.skuMap));
   inputs.skuMapExisting = mapSheet ? readSheetTable_(mapSheet).rows : [];
 
-  // Rule 7: manual tabs (never overwritten).
-  inputs.mfgInv = rowsOf_(sheetByName_(ss, tabs.mfgInv));
+  // Rule 7: manual tabs (never overwritten). MFG Counts: this month's tab if it exists (null = create it, pre-filled).
+  var countsSheet = sheetByName_(ss, tabs.mfgInv);
+  inputs.mfgInv = countsSheet ? rowsOf_(countsSheet) : null;
   inputs.adsReceipts = rowsOf_(sheetByName_(ss, tabs.adsReceipts));
-  var prevMfg = prevSs && sheetByName_(prevSs, 'MFG Inventory ' + m.prevEndStr);
+  // Rule 4.3 / 4.4: MFG starting balances = last month's MFG Counts; first run = the first-run workbook's MFG rows.
+  var prevCountsName = 'MFG Counts ' + m.prevEndStr;
+  var prevMfg = prevSs && sheetByName_(prevSs, prevCountsName);
+  var mfgStartSource;
   if (prevMfg) {
-    inputs.mfgStart = rowsOf_(prevMfg).map(function (r) { return [r[0], r[1], r[3]]; });
+    inputs.mfgStart = rowsOf_(prevMfg).map(function (r) { return [r[0], r[1], r[2]]; });
     inputs.mfgStartFromPrev = true;
+    mfgStartSource = 'Copied from "' + prevCountsName + '" (EOM Qty) in the ' + m.prevLabel + ' workbook.';
+  } else if (!prevSs) {
+    var bm = CONFIG.BOOTSTRAP_MFG;
+    var bootVar = sheetByName_(boot(), bm.tab);
+    if (!bootVar) throw new Error('First run: the first-run workbook has no "' + bm.tab + '" tab to take last month\'s MFG balances from.');
+    inputs.mfgStart = mfgStartFromBootstrap_(bootVar.getDataRange().getValues());
+    inputs.mfgStartFromPrev = true;
+    mfgStartSource = 'First run: the "' + bm.categoryValue + '" rows of "' + bm.tab + '" in the first-run workbook (' + inputs.mfgStart.length + ' rows).';
   } else {
-    inputs.mfgStart = rowsOf_(sheetByName_(ss, tabs.mfgStart));
-    inputs.mfgStartFromPrev = false;
+    throw new Error('The ' + m.prevLabel + ' workbook has no "' + prevCountsName + '" tab, so there are no MFG starting balances. Add that tab to last month\'s workbook (MFG | SKU | EOM Qty) and run again.');
   }
 
   inputs.sources = {
     startSources: start.sourceText,
     shopifySource: '"' + sellThruName_(m) + '" in the month folder (' + (sell.reused ? 'reused — newer than the Shopify CSV' : 'rebuilt from the Shopify CSV this run') + ').',
-    mfgStartSource: prevMfg ? 'Copied from "MFG Inventory ' + m.prevEndStr + '" in the ' + m.prevLabel + ' workbook.' :
-      'No ' + m.prevLabel + ' workbook found — first run: type last month\'s MFG EOM quantities on "' + tabs.mfgStart + '".'
+    mfgStartSource: mfgStartSource
   };
 
   // Build every tab in memory (pure), check formulas are Excel-safe, then write.

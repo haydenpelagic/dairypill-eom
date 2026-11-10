@@ -60,7 +60,7 @@ Good to know:
 3. In the script editor choose **buildEOM** → **Run**. It takes a few minutes. When it finishes, the **Execution log** at the bottom shows a link to the workbook.
 4. Open the workbook. It opens on the **Checks** tab — anything red (**FLAG**) needs attention.
 5. Fill in the **yellow tabs**:
-   - **MFG Inventory** — one row per manufacturer and SKU: `MFG` (VitaQuest, VitaPros, …), `SKU`, `Received Qty`, `EOM Qty`.
+   - **MFG Counts** — already lists last month's MFG + SKU rows. Type each `EOM Qty` (and `Received Qty` if any). Add new MFG/SKU rows at the bottom; reorder rows however you like. Variance Overview and Inventory Valuation update as you type — no rerun.
    - **ADS Receipts** — `PO Number`, `SKU`, `Qty` received at ADS this month.
    - **COGS** — add any SKU the Checks tab says has no cost.
 6. Run **buildEOM** again. Everything you typed in yellow tabs is kept; the summaries update.
@@ -83,7 +83,7 @@ The script normally takes starting balances from last month's folder. For the fi
    - last month's month-end **ADS stock snapshot** (CSV), and
    - *optional:* an **Amazon Inventory Ledger** (CSV) that **ends on last month's final day**. It is only used to check that Amazon's starting balance ties to last month's ending (a FLAG on Checks if not).
 3. COGS and Prepaid are copied automatically from the hand-built September workbook.
-4. On the **MFG Starting Balance** tab, type last month's VitaQuest/VitaPros EOM quantities, then run again.
+4. MFG starting balances are taken from the Raw Material rows of the hand-built September workbook's Variance Overview — nothing to type.
 
 From the second month on, none of this is needed.
 
