@@ -13,6 +13,11 @@ function shopifyOnly() {
   return shopifyOnlyFor_(CONFIG.MONTH_OVERRIDE);
 }
 
+/** Rule 15: copies the finished month (this month's workbook) into the Ops Hub 2.0 tabs. Run after checking the workbook. */
+function writeOpsHub() {
+  return writeOpsHubFor_(CONFIG.MONTH_OVERRIDE);
+}
+
 /** Rule 1.2: monthText is "September 2026", or blank for last calendar month. Returns the workbook link. */
 function buildEOMFor_(monthText) {
   var startedAt = new Date();
@@ -155,6 +160,128 @@ function shopifyOnlyFor_(monthText) {
   var url = SpreadsheetApp.openById(sell.id).getUrl();
   log_('Done: ' + url);
   return url;
+}
+
+// -----------------------------------------------------------------------------
+// Rule 15: writeOpsHub
+// -----------------------------------------------------------------------------
+
+/**
+ * Rule 15: reads this month's finished workbook (calculated values) and writes it into Ops Hub 2.0:
+ * sku_matrix (new SKUs), wo_log (the month's kit lines), inventory_eom and sell_thru monthly (the month's column).
+ * Everything is read and checked first; nothing is written if anything is wrong. Safe to run again.
+ */
+function writeOpsHubFor_(monthText) {
+  var m = resolveMonth_(monthText, new Date());
+  var tabs = tabNames_(m), W = CONFIG.OPS_HUB_WRITE;
+  var monthFolder = subfolder_(parentFolder_(), m.label, true);
+  var wbFile = fileByName_(monthFolder, workbookName_(m));
+  if (!wbFile) throw new Error('There is no "' + workbookName_(m) + '" in the "' + m.label + '" folder. Run buildEOM for ' + m.label + ' first, check it, then run writeOpsHub.');
+  var ss = SpreadsheetApp.open(wbFile);
+  function wbTab(name, optional) {
+    var s = sheetByName_(ss, name);
+    if (!s && !optional) throw new Error('The ' + m.label + ' workbook has no "' + name + '" tab. Run buildEOM for ' + m.label + ' again, then run writeOpsHub.');
+    return s ? s.getDataRange().getValues() : [];
+  }
+  var wbValues = { variance: wbTab(tabs.variance), outbound: wbTab(tabs.outbound), workOrders: wbTab(tabs.workOrders), skuList: wbTab(tabs.skuList, true) };
+
+  var hub = SpreadsheetApp.openById(W.spreadsheetId);
+  var tz = hub.getSpreadsheetTimeZone();
+  var sheets = {}, hubValues = {};
+  ['skuMatrix', 'woLog', 'inventoryEom', 'sellThru'].forEach(function (k) {
+    sheets[k] = sheetByName_(hub, W[k].sheetName);
+    if (!sheets[k]) throw new Error('Ops Hub 2.0 has no tab named "' + W[k].sheetName + '". Nothing was written.');
+    hubValues[k] = datesToSerials_(sheets[k].getDataRange().getValues(), tz);
+  });
+
+  var plan = planOpsHubWrite_(wbValues, hubValues, m); // stops here, before any write, if anything is wrong
+  applySkuMatrix_(sheets.skuMatrix, plan.skuMatrix);
+  applyWoLog_(sheets.woLog, plan.woLog, hubValues.woLog[0]);
+  applyMonthColumn_(sheets.inventoryEom, plan.inventoryEom);
+  applyMonthColumn_(sheets.sellThru, plan.sellThru);
+  SpreadsheetApp.flush();
+  var lines = opsHubSummary_(plan);
+  lines.forEach(log_);
+  log_('Done: ' + hub.getUrl());
+  return lines.join('\n');
+}
+
+/** Dates read from a sheet become date numbers (in the sheet's time zone), so they compare exactly. */
+function datesToSerials_(values, tz) {
+  return values.map(function (r) {
+    return r.map(function (v) {
+      if (Object.prototype.toString.call(v) !== '[object Date]') return v;
+      return parseMDY_(Utilities.formatDate(v, tz, 'yyyy-MM-dd'), '');
+    });
+  });
+}
+
+/** Grows the sheet so (rows, cols) fits. */
+function ensureSize_(sheet, rows, cols) {
+  if (rows > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), rows - sheet.getMaxRows());
+  if (cols > sheet.getMaxColumns()) sheet.insertColumnsAfter(sheet.getMaxColumns(), cols - sheet.getMaxColumns());
+}
+
+/** Rule 15.5: new SKUs at the bottom of sku_matrix (SKU as text, Description, Status). */
+function applySkuMatrix_(sheet, plan) {
+  if (!plan.rows.length) return;
+  var n = plan.rows.length;
+  ensureSize_(sheet, plan.startRow + n - 1, Math.max(plan.cols.sku, plan.cols.desc, plan.cols.status));
+  sheet.getRange(plan.startRow, plan.cols.sku, n, 1).setNumberFormat('@'); // SKUs stay text (Rule 5.1a)
+  ['sku', 'desc', 'status'].forEach(function (k, j) {
+    sheet.getRange(plan.startRow, plan.cols[k], n, 1).setValues(plan.rows.map(function (r) { return [r[j]]; }));
+  });
+}
+
+/**
+ * Rule 15.4: writes ONLY Date, Quantity, SKU and Cost from plan.firstRow down. A written row whose Month / Channel
+ * formula cell is empty gets the formula of the row above (copied, so it points at its own row).
+ */
+function applyWoLog_(sheet, plan, header) {
+  if (!plan.changed) return;
+  var n = plan.rows.length, first = plan.firstRow;
+  ensureSize_(sheet, first + n - 1, Math.max(plan.cols.date, plan.cols.qty, plan.cols.sku, plan.cols.cost));
+  sheet.getRange(first, plan.cols.date, n, 1).setNumberFormat('yyyy-mm-dd');
+  sheet.getRange(first, plan.cols.sku, n, 1).setNumberFormat('@');
+  sheet.getRange(first, plan.cols.cost, n, 1).setNumberFormat('"$"#,##0.00');
+  ['date', 'qty', 'sku', 'cost'].forEach(function (k, j) {
+    sheet.getRange(first, plan.cols[k], n, 1).setValues(plan.rows.map(function (r) { return [r[j]]; }));
+  });
+  CONFIG.OPS_HUB_WRITE.woLog.formulaHeaders.forEach(function (h) {
+    var c = headerIndex_(header, h);
+    if (c < 0 || first < 3) return;
+    var formulas = sheet.getRange(first, c + 1, n, 1).getFormulas();
+    for (var i = 0; i < n; i++) {
+      if (formulas[i][0] || woLogRowKey_(plan.rows[i]) === woLogRowKey_(['', '', '', ''])) continue;
+      sheet.getRange(first + i - 1, c + 1).copyTo(sheet.getRange(first + i, c + 1));
+    }
+  });
+}
+
+/**
+ * Rules 15.2 / 15.3: the month's column and any new rows. A new column is first copied from last month's column
+ * (header formats and the total formulas above the table follow), then its header is set to the month-end date
+ * and every row's number is written. New rows: group and SKU (as text); Code / Description copy the formula of
+ * the row above when it has one, otherwise get Group+SKU / the SKU's description as plain text.
+ */
+function applyMonthColumn_(sheet, plan) {
+  ensureSize_(sheet, plan.rowsNeeded, plan.colsNeeded);
+  if (plan.isNew) {
+    sheet.getRange(1, plan.copyFromCol, plan.lastDataRowBefore, 1).copyTo(sheet.getRange(1, plan.col, plan.lastDataRowBefore, 1));
+    sheet.getRange(plan.firstRow - 1, plan.col).setValues([[plan.headerSerial]]);
+  }
+  plan.newRows.forEach(function (nr) {
+    sheet.getRange(nr.row, plan.skuCol).setNumberFormat('@');
+    sheet.getRange(nr.row, plan.groupCol).setValues([[nr.group]]);
+    sheet.getRange(nr.row, plan.skuCol).setValues([[nr.sku]]);
+    [[plan.codeCol, nr.code], [plan.descCol, nr.desc]].forEach(function (p) {
+      if (!p[0]) return;
+      var formula = plan.templateRow ? sheet.getRange(plan.templateRow, p[0]).getFormula() : '';
+      if (formula) sheet.getRange(plan.templateRow, p[0]).copyTo(sheet.getRange(nr.row, p[0]));
+      else sheet.getRange(nr.row, p[0]).setNumberFormat('@').setValues([[p[1]]]);
+    });
+  });
+  if (plan.colValues.length) sheet.getRange(plan.firstRow, plan.col, plan.colValues.length, 1).setValues(plan.colValues);
 }
 
 // -----------------------------------------------------------------------------

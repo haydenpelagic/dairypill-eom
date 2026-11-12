@@ -10,6 +10,26 @@ const newId = (p) => p + (nextId++);
 let clock = 1000;
 const tick = () => new Date(++clock * 1000);
 
+/**
+ * A formula copied from one cell to another, as Google Sheets does it: references without "$" move by the
+ * same number of rows / columns (A1, A1:B2, D3:D, A:A, 5:5). Text in quotes is left alone.
+ */
+function shiftFormula(f, dr, dc) {
+  const col = (s) => [...s].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0);
+  const letters = (n) => { let s = ''; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; };
+  const c = (abs, L) => abs + (abs ? L : letters(col(L.toUpperCase()) + dc));
+  const r = (abs, n) => abs + (abs ? n : String(Number(n) + dr));
+  const re = /("(?:[^"]|"")*")|('(?:[^']|'')*'!|[A-Za-z_][A-Za-z0-9_.]*!)|([A-Za-z_][A-Za-z0-9_.]*\()|(\$?)(\d+):(\$?)(\d+)|(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![A-Za-z0-9_(])|(\$?)([A-Za-z]{1,3})(?=:)|(:)(\$?)([A-Za-z]{1,3})(?![A-Za-z0-9_(])/g;
+  return f.replace(re, (m, str, sheet, fn, ra, r1, rb, r2, ca, cl, rabs, rn, cca, ccl, colon, cca2, ccl2) => {
+    if (str || sheet || fn) return m;
+    if (r1 !== undefined) return r(ra, r1) + ':' + r(rb, r2);
+    if (cl !== undefined) return c(ca, cl) + r(rabs, rn);
+    if (ccl !== undefined) return c(cca, ccl);
+    if (colon) return ':' + c(cca2, ccl2);
+    return m;
+  });
+}
+
 function looksNumeric(s) { return /^-?[\d,]*\d(\.\d+)?$/.test(s) && !/^0\d/.test(s); }
 
 class MockFile {
@@ -57,6 +77,26 @@ class MockRange {
       out.push(row);
     }
     return out;
+  }
+  getFormula() { const v = this.sheet.raw(this.r, this.c); return typeof v === 'string' && v.startsWith('=') ? v : ''; }
+  getFormulas() {
+    const out = [];
+    for (let i = 0; i < this.nr; i++) {
+      const row = [];
+      for (let j = 0; j < this.nc; j++) { const v = this.sheet.raw(this.r + i, this.c + j); row.push(typeof v === 'string' && v.startsWith('=') ? v : ''); }
+      out.push(row);
+    }
+    return out;
+  }
+  /** Copies values, formulas (moved like Google Sheets does) and number formats, cell by cell. */
+  copyTo(dest) {
+    const dr = dest.r - this.r, dc = dest.c - this.c, src = [];
+    this.each((r, c) => src.push([r, c, this.sheet.raw(r, c), this.sheet.formats[r + ',' + c]]));
+    for (const [r, c, v, f] of src) {
+      if (f === undefined) delete dest.sheet.formats[(r + dr) + ',' + (c + dc)]; else dest.sheet.formats[(r + dr) + ',' + (c + dc)] = f;
+      dest.sheet.setCell(r + dr, c + dc, typeof v === 'string' && v.startsWith('=') ? shiftFormula(v, dr, dc) : v);
+    }
+    return this;
   }
   each(fn) { for (let i = 0; i < this.nr; i++) for (let j = 0; j < this.nc; j++) fn(this.r + i, this.c + j); }
   setFontWeight() { return this; }
@@ -131,6 +171,7 @@ class MockSpreadsheet {
   getUrl() { return 'https://docs.google.com/spreadsheets/d/' + this.file.id; }
   getName() { return this.file.name; }
   getSheets() { return this.sheets.slice(); }
+  getSpreadsheetTimeZone() { return 'America/New_York'; }
   getSheetByName(n) { return this.sheets.find((s) => s.name === n) || null; }
   insertSheet(n) {
     if (this.sheets.some((s) => s.name.toLowerCase() === n.toLowerCase())) throw new Error('Sheet already exists: ' + n);
@@ -195,4 +236,4 @@ function createGas(opts) {
   };
 }
 
-module.exports = { createGas };
+module.exports = { createGas, shiftFormula };

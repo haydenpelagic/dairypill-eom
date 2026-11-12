@@ -31,7 +31,7 @@ Good to know:
 
 ### 3. Give it permission (first run only)
 1. In the toolbar dropdown next to **Debug**, choose **buildEOM** and click **Run**.
-2. Google asks for permission → **Review permissions** → pick the account that will run it (it needs access to the EOM Reports folder, the Ops Hub sheet and the September hand-built workbook) → **Advanced** → **Go to DairyPill EOM (unsafe)** → **Allow**.
+2. Google asks for permission → **Review permissions** → pick the account that will run it (it needs access to the EOM Reports folder, **edit** access to the Ops Hub sheet — `writeOpsHub` writes there — and the September hand-built workbook) → **Advanced** → **Go to DairyPill EOM (unsafe)** → **Allow**.
    ("Unsafe" just means Google hasn't reviewed a script you wrote yourself — normal for personal scripts.)
 
 ---
@@ -65,7 +65,8 @@ Good to know:
    - **ADS Receipts** — `PO Number`, `SKU`, `Qty` received at ADS this month.
    - **COGS** — add any SKU the Checks tab says has no cost.
 6. Run **buildEOM** again. Everything you typed in yellow tabs is kept; the summaries update.
-7. For accounting: **delete the Checks tab** (it's QC only; nothing points at it, and the next run rebuilds it), then **File → Download → Microsoft Excel (.xlsx)**.
+7. **Copy the month into Ops Hub 2.0:** when the workbook is final, choose **writeOpsHub** → **Run** (RULES 15). It fills the month's column on `inventory_eom` and `sell_thru monthly`, replaces the month's rows on `wo_log`, and adds any new SKU to `sku_matrix` as **NEEDS VERIFICATION**. If something is wrong it stops before writing anything. Running it again just replaces the month — nothing doubles. Don't type the month into those tabs by hand any more.
+8. For accounting: **delete the Checks tab** (it's QC only; nothing points at it, and the next run rebuilds it), then **File → Download → Microsoft Excel (.xlsx)**.
 
 ### Shopify only
 To make just the **DairyPill Sell Thru** file (replaces the old "DairyPill Monthly Sell Thru" script): choose **shopifyOnly** → **Run**. It uses the Shopify CSV in the month folder.

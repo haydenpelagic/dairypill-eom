@@ -17,7 +17,7 @@ Claude Code should then update this file, `src/Config.gs` / `src/Logic.gs`, and 
 - **1.2** `buildEOM()` builds **last calendar month** by default. `MONTH_OVERRIDE` in `Config.gs` (e.g. `'September 2026'`) forces a month.
 - **1.3** The workbook `DAIRYPILL_EOM COGS - September 2026` is created in the month folder. If it already exists it is **rebuilt in place**: raw, helper and summary tabs are replaced; **manual tabs are never overwritten** (rule 7). Safe to run, fill in manual tabs, and run again.
 - **1.4** Anything missing or ambiguous **stops the run** with a plain-English message naming the file and the problem. No silent defaults.
-- **1.5** Run it from the Apps Script editor (**buildEOM** / **shopifyOnly** → **Run**), signed in to an account that can open the EOM Reports folder. (Workspace Studio steps were tried and retired on 2026-11-10 — they can't run from the DairyPill account.)
+- **1.5** Run it from the Apps Script editor (**buildEOM** / **shopifyOnly** / **writeOpsHub** → **Run**), signed in to an account that can open the EOM Reports folder. (Workspace Studio steps were tried and retired on 2026-11-10 — they can't run from the DairyPill account.)
 
 ## 2. Recognizing files (by their columns, never by file name)
 
@@ -182,3 +182,19 @@ Each line shows **OK**, **FLAG** (needs attention), **CHECK** (confirm by eye) o
 - **14.3** No typed SKUs, channels or locations inside summary formulas — they point at the row's SKU/location cell or a header cell.
 - **14.4** Totals use whole columns or SUMIFS, never fixed row numbers.
 - **14.5** The README tab lists every tab, what it is and its rule number.
+
+## 15. Writing the month into Ops Hub 2.0 (`writeOpsHub`)
+
+`buildEOM` never writes to the Ops Hub. When the month's workbook is finished and checked, run **`writeOpsHub`** (Apps Script editor → **Run**). It copies the month into four Ops Hub 2.0 tabs.
+
+- **15.1 Source and safety.** Everything comes from **this month's workbook** as it calculates now (so MFG counts and WO SKU Fixes you typed are included): Variance Overview, Outbound Summary, Work Orders and SKU List. All inputs and all four tabs are read and checked **before anything is written**; any problem stops the run with a plain-English message and nothing changes. Running it again for the same month **replaces** that month's numbers — nothing is ever added twice. Columns are found by their header names; nothing else on the tabs is touched (other months, formulas, the wo_log rate table).
+- **15.2 `inventory_eom`** — one row per **Location + SKU** (`Code | Location | SKU | months…`, headers in row 2, each month headed by its month-end date). The month's column = each Variance Overview row's **Actual Ending Inventory**, for every location: ADS, Amazon and each MFG (VitaQuest, VitaPros…).
+  - If the month has no column yet, it is added right after the last month column, which must be **last month** (months stay in order — a missing month stops the run). The new column copies last month's column first, so the total formula in row 1 and the formats follow.
+  - The row is found by Location + SKU (capitals don't matter; `10030` typed as a number still matches). Every existing row gets a number — **0** when the month has none for it.
+  - A Location + SKU that isn't on the tab is **added at the bottom** (Code = Location + SKU), only when its number isn't 0. Older month cells on a new row stay blank.
+- **15.3 `sell_thru monthly`** — one row per **Channel + SKU** (`Channel | Code | SKU | Description | months…`, headers in row 5). The month's column = **Units** per channel from Outbound Summary: DTC, Marketing, CX, TikTok, Samples and Amazon (All Channels is not written). Same column, matching, 0 and new-row rules as 15.2. On a new row, Code and Description copy the formulas of the row above (so Description is looked up on `sku_matrix` like every other row). SKUs match exactly: Amazon `50001` and `A50001` are different rows.
+- **15.4 `wo_log`** — one row per kit line on the Work Orders tab (Pieces ≠ 0): **Date**, **Quantity** = Pieces, **SKU** (after WO SKU Fixes, rule 5.5a), **Cost** = the line's **Rate** from the ADS production report. Only those four columns are written; Month and Channel stay the tab's formulas (copied down from the row above if a written row has none).
+  - The rows dated in the month are **replaced** by the month's kit lines, oldest first, where that month's rows were (else before the first later month, else at the end). Rows of other months are kept as they are.
+  - A kit line with **no SKU**, no Rate, or a date outside the month stops the run (fix it, run `buildEOM` again, then `writeOpsHub`). A wo_log row with a Quantity/SKU/Cost but no Date also stops it.
+- **15.5 `sku_matrix`** — every SKU that lands on one of the tabs above with a number other than 0 (or in a kit line) and isn't on `sku_matrix` is **added after its last SKU**: SKU (as text), Description (from the workbook's SKU List, blank if none) and **Status = NEEDS VERIFICATION**. Existing rows are never changed. This runs first, so new sell_thru rows find their description.
+- **15.6** The Execution log lists what was done: which column was added or replaced, how many rows were filled, which rows and SKUs were added, and which wo_log rows hold the month.

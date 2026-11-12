@@ -18,7 +18,8 @@ The owner is non-technical: explain in plain English, never ask them to review c
 ## Layout
 - `src/Config.gs` — every setting (folder ID, channel rules, SKU renames, column names).
 - `src/Logic.gs` — pure functions: parsing, SKU lists, and every formula. No Google calls. All tested in Node.
-- `src/Main.gs` — entry points `buildEOM()` / `shopifyOnly()` (thin wrappers over `buildEOMFor_(month)` / `shopifyOnlyFor_(month)`); Drive reading, starting balances.
+- `src/Main.gs` — entry points `buildEOM()` / `shopifyOnly()` / `writeOpsHub()` (thin wrappers over `buildEOMFor_(month)` / `shopifyOnlyFor_(month)` / `writeOpsHubFor_(month)`); Drive reading, starting balances, applying the Ops Hub write plan.
+- **Ops Hub writes (RULES 15):** only `writeOpsHub` writes to Ops Hub 2.0 (`inventory_eom`, `sell_thru monthly`, `wo_log`, `sku_matrix`), from the finished workbook, run by hand after checking it. `buildEOM` only reads the Ops Hub. The plan is pure (`planOpsHubWrite_` in Logic.gs, tested in `test/opsHub.test.js`); nothing is written unless every check passes.
 - `src/Sheets.gs` — writing sheet models to Google Sheets.
 - `dist/` — exactly what clasp uploads to Apps Script: `DairyPill_EOM.gs` (generated bundle) + `appsscript.json` (copied). Never edit by hand (`npm run bundle`; a test fails if stale).
 - `.clasp.json` — Apps Script project (owned by the DairyPill account), `rootDir: dist`.
@@ -28,7 +29,7 @@ The owner is non-technical: explain in plain English, never ask them to review c
 - The owner is the only editor. All work ends up on `main`; `main` is what is live in Apps Script.
 - The owner has given standing permission to push to `main`. A session that starts on its own `claude/…` branch: do the work there, run `npm test` + `npm run bundle`, then `git push origin HEAD:main` (fast-forward; if main moved, rebase first — never force-push main), then delete the session branch on GitHub. Don't leave extra branches behind.
 - After pushing, **check the "Deploy to Apps Script" run on main went green** (GitHub Actions) before telling the owner it is live. A red run with "invalid_grant" = the saved Google sign-in expired: owner reruns `npx @google/clasp@2.4.2 login`, `pbcopy < ~/.clasprc.json`, updates the `CLASPRC_JSON` secret, then re-run the job.
-- Old unmerged work is kept as patch files in `archive/` (see archive/README.md), not branches: `wo-log-rule-5.7` (writing kit lines to the Ops Hub wo_log — never adopted), `workspace-studio` (retired), `ops-logs-first-draft` (superseded by the current Ops Hub log reading).
+- Old unmerged work is kept as patch files in `archive/` (see archive/README.md), not branches: `wo-log-rule-5.7` (first draft of writing kit lines to wo_log — superseded by RULES 15.4), `workspace-studio` (retired), `ops-logs-first-draft` (superseded by the current Ops Hub log reading).
 - `test/` — `formulaEngine.js` calculates the generated formulas; `gasMock.js` is an in-memory Drive/Sheets so `e2e.test.js` runs the real entry points.
 - `tools/replay.js <folder>` — replays a real month from local CSV exports and compares with the hand-built report (data is never committed).
 

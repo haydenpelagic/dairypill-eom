@@ -45,6 +45,20 @@ var CONFIG = {
       headers: { order: 'ADS Order Number', amazon: 'Amazon Number', sku: 'SKU', qty: 'Quantity', orderDate: 'Order Date', shipDate: 'Ship Date' } }
   },
 
+  // ---- Rule 15: writeOpsHub() copies the finished month into these Ops Hub 2.0 tabs ----
+  // Columns are found by their header names; nothing else on the tabs is touched.
+  OPS_HUB_WRITE: {
+    spreadsheetId: '1rCXpffesBqnfocXslxqb9VzuFCQd60X5IV_YPZTkEtE', // DairyPill Ops Hub 2.0
+    // Rule 15.2: one row per Location + SKU, one column per month (header = month-end date).
+    inventoryEom: { sheetName: 'inventory_eom', headerRow: 2, group: 'Location', sku: 'SKU', code: 'Code' },
+    // Rule 15.3: one row per Channel + SKU, one column per month (header = month-end date).
+    sellThru: { sheetName: 'sell_thru monthly', headerRow: 5, group: 'Channel', sku: 'SKU', code: 'Code', desc: 'Description' },
+    // Rule 15.4: one row per kit line. Only these four columns are written; Month / Channel are formulas on the tab.
+    woLog: { sheetName: 'wo_log', headers: { date: 'Date', qty: 'Quantity', sku: 'SKU', cost: 'Cost' }, formulaHeaders: ['Month', 'Channel'] },
+    // Rule 15.5: SKUs not on sku_matrix are added with this Status.
+    skuMatrix: { sheetName: 'sku_matrix', headers: { sku: 'SKU', desc: 'Description', status: 'Status' }, newStatus: 'NEEDS VERIFICATION' }
+  },
+
   // ---- Rule 6.2 / 7.3: first-run source for COGS and Prepaid -----------------
   // Used only when there is no previous month's workbook to carry them from.
   BOOTSTRAP_WORKBOOK_ID: '1vFNFEbUKyoTlj21PrKWjk_2Yfdhionh7wkkSF2J3pAw', // Sept 2026 (hand-built)

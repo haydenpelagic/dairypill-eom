@@ -5,7 +5,7 @@ Their unmerged commits are saved here as patch files. Nothing here is used by th
 
 | File | What it was | Why not used |
 |---|---|---|
-| `wo-log-rule-5.7.patch` | Write each month's ADS kit lines into the Ops Hub `wo_log` (rule 5.7) | Never adopted — ask the owner before reviving |
+| `wo-log-rule-5.7.patch` | Write each month's ADS kit lines into the Ops Hub `wo_log` (rule 5.7) | Superseded by `writeOpsHub` (RULES 15.4), which writes wo_log from the finished workbook |
 | `workspace-studio.patch` | Workspace Studio steps to start builds from a flow | Retired 2026-11-10 (won't run from the DairyPill account) |
 | `ops-logs-first-draft.patch` | First draft of reading shipments from the Ops Hub logs, In Transit, Samples | Superseded by the current Ops Hub log reading (rule 5.6) |
 

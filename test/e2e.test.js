@@ -239,6 +239,132 @@ test('3. October carries everything forward from September (first-run workbook n
   assert.ok(findFile(oct, 'ADS Starting Balance 09.30.2026.csv'));
 });
 
+test('4. writeOpsHub copies October into the Ops Hub tabs; running it again changes nothing', () => {
+  ctx.CONFIG.MONTH_OVERRIDE = 'October 2026';
+  const oct = parent.getFoldersByName('October 2026').next();
+  const ss = findFile(oct, 'DAIRYPILL_EOM COGS - October 2026').ss;
+  const tabs = ctx.tabNames_(ctx.monthInfo_(2026, 9));
+  const D = (y, m, d) => ctx.dateSerial_(y, m, d);
+  const AUG = D(2026, 7, 31), SEP = D(2026, 8, 30), OCT = D(2026, 9, 31);
+  // The Ops Hub tabs as they look today (formulas the test engine understands; SKU columns text-formatted).
+  const hub = gas.drive.files.get(ctx.CONFIG.OPS_HUB_WRITE.spreadsheetId).ss;
+  const addTab = (name, rows, textCols) => {
+    const s = new gas.MockSheet(hub, name);
+    s.cells = rows.map((r) => r.slice());
+    rows.forEach((r, i) => (textCols || []).forEach((c) => { s.formats[(i + 1) + ',' + c] = '@'; }));
+    hub.sheets.push(s); hub.dirty = true;
+    return s;
+  };
+  const desc = (r) => '=IFERROR(INDEX(sku_matrix!B:B,MATCH(C' + r + ',sku_matrix!A:A,0)),"")';
+  const inv = addTab('inventory_eom', [
+    ['', '', 'Total Units - ADS', '=SUMIFS(D3:D,$B3:$B,"ADS")', '=SUMIFS(E3:E,$B3:$B,"ADS")'],
+    ['Code', 'Location', 'SKU', AUG, SEP],
+    ['ADS80090', 'ADS', '80090', 1, 170], ['ADS99999', 'ADS', '99999', 5, 5], ['AmazonA0030', 'Amazon', 'A0030', 1, 115]], [3]);
+  const sell = addTab('sell_thru monthly', [
+    ['Last Updated:'], ['', '', '', '', 'Actual', 'Actual'],
+    ['', '', '', 'Total Units Sold', '=SUM(E6:E)', '=SUM(F6:F)'], ['', '', '', 'Total Units Sold - Amazon', '=SUMIFS(E6:E,$A6:$A,"Amazon")', '=SUMIFS(F6:F,$A6:$A,"Amazon")'],
+    ['Channel', 'Code', 'SKU', 'Description', AUG, SEP],
+    ['DTC', '=A6&C6', '10030', desc(6), 1, 2], ['Amazon', '=A7&C7', 'A0030', desc(7), 3, 4]], [3]);
+  const month = (r) => '=IF(A' + r + '=0,"",A' + r + ')';
+  const chan = (r) => '=IF(C' + r + '="","",IFERROR(IF(SEARCH("A",C' + r + ')=1,"Amazon","DTC"),"DTC"))';
+  const wo = addTab('wo_log', [
+    ['Date', 'Quantity', 'SKU', 'Cost', 'Month', 'Channel', '', 'SKU', 'Nov 2025'],
+    [D(2026, 8, 3), 200, '10030', 0.54, month(2), chan(2), '', 'Base Fee', 32],
+    [D(2026, 8, 24), 22, '10180', 0.54, month(3), chan(3), '', 'A0090', 1],
+    ['', '', '', '', month(4), chan(4)]], [3]); // formulas stop at row 4: later rows get them copied down
+  const sku = addTab('sku_matrix', [['SKU', 'Description', 'Status'], ['10030', 'Starter Kit - Black 30ct', 'ACTIVE'], ['80090', '90ct Pouch', 'ACTIVE']], [1]);
+  const snap = () => [inv, sell, wo, sku].map((s) => JSON.stringify(s.rawValues()));
+
+  // Nothing is written when the month's workbook doesn't exist.
+  const before = snap();
+  ctx.CONFIG.MONTH_OVERRIDE = 'January 2030';
+  parent.createFolder('January 2030');
+  assert.throws(() => ctx.writeOpsHub(), /no "DAIRYPILL_EOM COGS - January 2030" in the "January 2030" folder\. Run buildEOM for January 2030 first/);
+  assert.deepEqual(snap(), before);
+
+  ctx.CONFIG.MONTH_OVERRIDE = 'October 2026';
+  const summary = ctx.writeOpsHub();
+  assert.match(summary, /inventory_eom: Oct 2026 column F added/);
+
+  // inventory_eom: column F = October; every Variance Overview row's Actual Ending, by Location + SKU
+  const iv = inv.getDataRange().getValues();
+  assert.equal(iv[1][5], OCT);
+  assert.equal(inv.rawValues()[0][5], '=SUMIFS(F3:F,$B3:$B,"ADS")', 'total formula copied from Sep');
+  const vo = ss.getSheetByName(tabs.variance).getDataRange().getValues();
+  let checked = 0;
+  vo.slice(4).forEach((r) => {
+    if (!r[1]) return;
+    const row = iv.find((x) => x[1] === r[0] && String(x[2]) === r[1]);
+    if (!row) { assert.equal(r[8], 0, 'only a 0 ending may be left off: ' + r[0] + ' ' + r[1]); return; }
+    assert.equal(row[5], r[8], r[0] + ' ' + r[1]);
+    checked++;
+  });
+  assert.ok(checked > 10);
+  assert.equal(iv.find((x) => x[2] === '99999')[5], 0, 'a row with nothing this month gets 0');
+  const added = iv.slice(5).filter((x) => x[1]);
+  assert.ok(added.length > 0 && added.every((x) => x[0] === x[1] + x[2] && x[3] === '' && x[4] === '' && typeof x[5] === 'number' && x[5] !== 0),
+    'new rows: Code = Location + SKU, older months blank, only non-zero rows added');
+  assert.equal(inv.formats[(iv.indexOf(added[0]) + 1) + ',3'], '@', 'new SKU cells are text');
+
+  // sell_thru monthly: column G = October units by Channel + SKU (Outbound Summary)
+  const sv = sell.getDataRange().getValues();
+  assert.equal(sv[4][6], OCT);
+  assert.equal(sell.rawValues()[2][6], '=SUM(G6:G)');
+  const ob = ss.getSheetByName(tabs.outbound).getDataRange().getValues();
+  const chans = ob[2];
+  let nonZero = 0;
+  ob.slice(4).forEach((r) => {
+    if (!r[0] || r[0] === 'TOTAL') return;
+    ob[3].forEach((h, j) => {
+      if (h !== 'Units' || chans[j] === 'All Channels') return;
+      const row = sv.find((x) => x[0] === chans[j] && String(x[2]) === r[0]);
+      if (r[j] === 0) { assert.ok(!row || row[6] === 0, chans[j] + ' ' + r[0]); return; }
+      nonZero++;
+      assert.ok(row, 'sell_thru row for ' + chans[j] + ' ' + r[0]);
+      assert.equal(row[6], r[j], chans[j] + ' ' + r[0]);
+    });
+  });
+  assert.ok(nonZero > 5);
+  const newSell = sell.rawValues().slice(7);
+  assert.ok(newSell.length > 0);
+  newSell.forEach((x, i) => {
+    const r = i + 8;
+    assert.equal(x[1], '=A' + r + '&C' + r, 'Code formula copied down');
+    assert.equal(x[3], desc(r), 'Description formula copied down');
+  });
+  assert.equal(sv[7][1], sv[7][0] + sv[7][2], 'Code calculates');
+
+  // wo_log: September rows kept; October = the Work Orders tab's lines, oldest first, Cost = Rate
+  const wl = wo.getDataRange().getValues();
+  const lines = ss.getSheetByName(tabs.workOrders).getDataRange().getValues().slice(1).filter((r) => r[5])
+    .map((r) => [ctx.parseMDY_(r[3]), r[5], r[4], r[6]]).sort((a, b) => a[0] - b[0]);
+  assert.ok(lines.length > 0);
+  assert.deepEqual(wl.slice(1, 3).map((r) => r.slice(0, 4)), [[D(2026, 8, 3), 200, '10030', 0.54], [D(2026, 8, 24), 22, '10180', 0.54]]);
+  assert.deepEqual(wl.slice(3, 3 + lines.length).map((r) => r.slice(0, 4)), lines);
+  const wr = wo.rawValues();
+  for (let r = 4; r < 4 + lines.length; r++) {
+    assert.equal(wr[r - 1][4], month(r), 'Month formula on row ' + r);
+    assert.equal(wr[r - 1][5], chan(r), 'Channel formula on row ' + r);
+  }
+  assert.equal(wr[0][7], 'SKU', 'rate table untouched');
+  assert.equal(wo.formats['4,1'], 'yyyy-mm-dd');
+
+  // sku_matrix: every SKU written is listed; new ones are NEEDS VERIFICATION
+  const sm = sku.getDataRange().getValues();
+  const listed = new Set(sm.slice(1).map((r) => String(r[0])));
+  iv.slice(2).concat(sv.slice(5)).forEach((x) => { if (x[2] !== '' && x[2] !== '99999') assert.ok(listed.has(String(x[2])), 'sku_matrix has ' + x[2]); });
+  assert.deepEqual(sm[1], ['10030', 'Starter Kit - Black 30ct', 'ACTIVE'], 'existing rows untouched');
+  assert.ok(sm.slice(3).length > 0 && sm.slice(3).every((r) => r[2] === 'NEEDS VERIFICATION'));
+
+  // Run again: nothing changes (no new column, no new rows, no duplicate kit lines)
+  const once = snap();
+  const again = ctx.writeOpsHub();
+  assert.match(again, /inventory_eom: Oct 2026 column F replaced/);
+  assert.match(again, /wo_log: .* already up to date/);
+  assert.match(again, /sku_matrix: no new SKUs/);
+  assert.deepEqual(snap(), once);
+});
+
 test('Rule 2.3: last month\'s renamed files are found with or without .csv, or saved as a Google Sheet', () => {
   const g = createGas(); const c = load(g);
   const f = g.root.createFolder('September 2026');

@@ -49,6 +49,20 @@ var CONFIG = {
       headers: { order: 'ADS Order Number', amazon: 'Amazon Number', sku: 'SKU', qty: 'Quantity', orderDate: 'Order Date', shipDate: 'Ship Date' } }
   },
 
+  // ---- Rule 15: writeOpsHub() copies the finished month into these Ops Hub 2.0 tabs ----
+  // Columns are found by their header names; nothing else on the tabs is touched.
+  OPS_HUB_WRITE: {
+    spreadsheetId: '1rCXpffesBqnfocXslxqb9VzuFCQd60X5IV_YPZTkEtE', // DairyPill Ops Hub 2.0
+    // Rule 15.2: one row per Location + SKU, one column per month (header = month-end date).
+    inventoryEom: { sheetName: 'inventory_eom', headerRow: 2, group: 'Location', sku: 'SKU', code: 'Code' },
+    // Rule 15.3: one row per Channel + SKU, one column per month (header = month-end date).
+    sellThru: { sheetName: 'sell_thru monthly', headerRow: 5, group: 'Channel', sku: 'SKU', code: 'Code', desc: 'Description' },
+    // Rule 15.4: one row per kit line. Only these four columns are written; Month / Channel are formulas on the tab.
+    woLog: { sheetName: 'wo_log', headers: { date: 'Date', qty: 'Quantity', sku: 'SKU', cost: 'Cost' }, formulaHeaders: ['Month', 'Channel'] },
+    // Rule 15.5: SKUs not on sku_matrix are added with this Status.
+    skuMatrix: { sheetName: 'sku_matrix', headers: { sku: 'SKU', desc: 'Description', status: 'Status' }, newStatus: 'NEEDS VERIFICATION' }
+  },
+
   // ---- Rule 6.2 / 7.3: first-run source for COGS and Prepaid -----------------
   // Used only when there is no previous month's workbook to carry them from.
   BOOTSTRAP_WORKBOOK_ID: '1vFNFEbUKyoTlj21PrKWjk_2Yfdhionh7wkkSF2J3pAw', // Sept 2026 (hand-built)
@@ -164,6 +178,11 @@ function buildEOM() {
 
 function shopifyOnly() {
   return shopifyOnlyFor_(CONFIG.MONTH_OVERRIDE);
+}
+
+/** Rule 15: copies the finished month (this month's workbook) into the Ops Hub 2.0 tabs. Run after checking the workbook. */
+function writeOpsHub() {
+  return writeOpsHubFor_(CONFIG.MONTH_OVERRIDE);
 }
 
 /** Rule 1.2: monthText is "September 2026", or blank for last calendar month. Returns the workbook link. */
@@ -308,6 +327,128 @@ function shopifyOnlyFor_(monthText) {
   var url = SpreadsheetApp.openById(sell.id).getUrl();
   log_('Done: ' + url);
   return url;
+}
+
+// -----------------------------------------------------------------------------
+// Rule 15: writeOpsHub
+// -----------------------------------------------------------------------------
+
+/**
+ * Rule 15: reads this month's finished workbook (calculated values) and writes it into Ops Hub 2.0:
+ * sku_matrix (new SKUs), wo_log (the month's kit lines), inventory_eom and sell_thru monthly (the month's column).
+ * Everything is read and checked first; nothing is written if anything is wrong. Safe to run again.
+ */
+function writeOpsHubFor_(monthText) {
+  var m = resolveMonth_(monthText, new Date());
+  var tabs = tabNames_(m), W = CONFIG.OPS_HUB_WRITE;
+  var monthFolder = subfolder_(parentFolder_(), m.label, true);
+  var wbFile = fileByName_(monthFolder, workbookName_(m));
+  if (!wbFile) throw new Error('There is no "' + workbookName_(m) + '" in the "' + m.label + '" folder. Run buildEOM for ' + m.label + ' first, check it, then run writeOpsHub.');
+  var ss = SpreadsheetApp.open(wbFile);
+  function wbTab(name, optional) {
+    var s = sheetByName_(ss, name);
+    if (!s && !optional) throw new Error('The ' + m.label + ' workbook has no "' + name + '" tab. Run buildEOM for ' + m.label + ' again, then run writeOpsHub.');
+    return s ? s.getDataRange().getValues() : [];
+  }
+  var wbValues = { variance: wbTab(tabs.variance), outbound: wbTab(tabs.outbound), workOrders: wbTab(tabs.workOrders), skuList: wbTab(tabs.skuList, true) };
+
+  var hub = SpreadsheetApp.openById(W.spreadsheetId);
+  var tz = hub.getSpreadsheetTimeZone();
+  var sheets = {}, hubValues = {};
+  ['skuMatrix', 'woLog', 'inventoryEom', 'sellThru'].forEach(function (k) {
+    sheets[k] = sheetByName_(hub, W[k].sheetName);
+    if (!sheets[k]) throw new Error('Ops Hub 2.0 has no tab named "' + W[k].sheetName + '". Nothing was written.');
+    hubValues[k] = datesToSerials_(sheets[k].getDataRange().getValues(), tz);
+  });
+
+  var plan = planOpsHubWrite_(wbValues, hubValues, m); // stops here, before any write, if anything is wrong
+  applySkuMatrix_(sheets.skuMatrix, plan.skuMatrix);
+  applyWoLog_(sheets.woLog, plan.woLog, hubValues.woLog[0]);
+  applyMonthColumn_(sheets.inventoryEom, plan.inventoryEom);
+  applyMonthColumn_(sheets.sellThru, plan.sellThru);
+  SpreadsheetApp.flush();
+  var lines = opsHubSummary_(plan);
+  lines.forEach(log_);
+  log_('Done: ' + hub.getUrl());
+  return lines.join('\n');
+}
+
+/** Dates read from a sheet become date numbers (in the sheet's time zone), so they compare exactly. */
+function datesToSerials_(values, tz) {
+  return values.map(function (r) {
+    return r.map(function (v) {
+      if (Object.prototype.toString.call(v) !== '[object Date]') return v;
+      return parseMDY_(Utilities.formatDate(v, tz, 'yyyy-MM-dd'), '');
+    });
+  });
+}
+
+/** Grows the sheet so (rows, cols) fits. */
+function ensureSize_(sheet, rows, cols) {
+  if (rows > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), rows - sheet.getMaxRows());
+  if (cols > sheet.getMaxColumns()) sheet.insertColumnsAfter(sheet.getMaxColumns(), cols - sheet.getMaxColumns());
+}
+
+/** Rule 15.5: new SKUs at the bottom of sku_matrix (SKU as text, Description, Status). */
+function applySkuMatrix_(sheet, plan) {
+  if (!plan.rows.length) return;
+  var n = plan.rows.length;
+  ensureSize_(sheet, plan.startRow + n - 1, Math.max(plan.cols.sku, plan.cols.desc, plan.cols.status));
+  sheet.getRange(plan.startRow, plan.cols.sku, n, 1).setNumberFormat('@'); // SKUs stay text (Rule 5.1a)
+  ['sku', 'desc', 'status'].forEach(function (k, j) {
+    sheet.getRange(plan.startRow, plan.cols[k], n, 1).setValues(plan.rows.map(function (r) { return [r[j]]; }));
+  });
+}
+
+/**
+ * Rule 15.4: writes ONLY Date, Quantity, SKU and Cost from plan.firstRow down. A written row whose Month / Channel
+ * formula cell is empty gets the formula of the row above (copied, so it points at its own row).
+ */
+function applyWoLog_(sheet, plan, header) {
+  if (!plan.changed) return;
+  var n = plan.rows.length, first = plan.firstRow;
+  ensureSize_(sheet, first + n - 1, Math.max(plan.cols.date, plan.cols.qty, plan.cols.sku, plan.cols.cost));
+  sheet.getRange(first, plan.cols.date, n, 1).setNumberFormat('yyyy-mm-dd');
+  sheet.getRange(first, plan.cols.sku, n, 1).setNumberFormat('@');
+  sheet.getRange(first, plan.cols.cost, n, 1).setNumberFormat('"$"#,##0.00');
+  ['date', 'qty', 'sku', 'cost'].forEach(function (k, j) {
+    sheet.getRange(first, plan.cols[k], n, 1).setValues(plan.rows.map(function (r) { return [r[j]]; }));
+  });
+  CONFIG.OPS_HUB_WRITE.woLog.formulaHeaders.forEach(function (h) {
+    var c = headerIndex_(header, h);
+    if (c < 0 || first < 3) return;
+    var formulas = sheet.getRange(first, c + 1, n, 1).getFormulas();
+    for (var i = 0; i < n; i++) {
+      if (formulas[i][0] || woLogRowKey_(plan.rows[i]) === woLogRowKey_(['', '', '', ''])) continue;
+      sheet.getRange(first + i - 1, c + 1).copyTo(sheet.getRange(first + i, c + 1));
+    }
+  });
+}
+
+/**
+ * Rules 15.2 / 15.3: the month's column and any new rows. A new column is first copied from last month's column
+ * (header formats and the total formulas above the table follow), then its header is set to the month-end date
+ * and every row's number is written. New rows: group and SKU (as text); Code / Description copy the formula of
+ * the row above when it has one, otherwise get Group+SKU / the SKU's description as plain text.
+ */
+function applyMonthColumn_(sheet, plan) {
+  ensureSize_(sheet, plan.rowsNeeded, plan.colsNeeded);
+  if (plan.isNew) {
+    sheet.getRange(1, plan.copyFromCol, plan.lastDataRowBefore, 1).copyTo(sheet.getRange(1, plan.col, plan.lastDataRowBefore, 1));
+    sheet.getRange(plan.firstRow - 1, plan.col).setValues([[plan.headerSerial]]);
+  }
+  plan.newRows.forEach(function (nr) {
+    sheet.getRange(nr.row, plan.skuCol).setNumberFormat('@');
+    sheet.getRange(nr.row, plan.groupCol).setValues([[nr.group]]);
+    sheet.getRange(nr.row, plan.skuCol).setValues([[nr.sku]]);
+    [[plan.codeCol, nr.code], [plan.descCol, nr.desc]].forEach(function (p) {
+      if (!p[0]) return;
+      var formula = plan.templateRow ? sheet.getRange(plan.templateRow, p[0]).getFormula() : '';
+      if (formula) sheet.getRange(plan.templateRow, p[0]).copyTo(sheet.getRange(nr.row, p[0]));
+      else sheet.getRange(nr.row, p[0]).setNumberFormat('@').setValues([[p[1]]]);
+    });
+  });
+  if (plan.colValues.length) sheet.getRange(plan.firstRow, plan.col, plan.colValues.length, 1).setValues(plan.colValues);
 }
 
 // -----------------------------------------------------------------------------
@@ -2486,6 +2627,373 @@ function assertExcelSafe_(sheets) {
     var m = re.exec(stripped);
     if (m) throw new Error('Internal check: formula on ' + x.sheet + ' row ' + x.row + ' uses ' + m[1] + ', which breaks in Excel.');
   });
+}
+
+// ---------------------------------------------------------------------------
+// Rule 15: writeOpsHub — the finished month copied into Ops Hub 2.0
+// (inventory_eom, sell_thru monthly, wo_log, sku_matrix). Everything here is
+// pure: Main.gs reads the tabs, these functions decide exactly what to write.
+// ---------------------------------------------------------------------------
+
+/** "Oct 2026" for a month-end date number (messages only). */
+function serialMonthLabel_(serial) {
+  var d = new Date(Date.UTC(1899, 11, 30) + serial * 86400000);
+  return MONTH_NAMES[d.getUTCMonth()].slice(0, 3) + ' ' + d.getUTCFullYear();
+}
+
+function blankCell_(v) { return v === '' || v === null || v === undefined || (typeof v === 'string' && v.trim() === ''); }
+
+/** Index of the first of the first `maxRows` rows that has every header in `names` (or -1). */
+function findHeaderRow_(values, names, maxRows) {
+  for (var i = 0; i < Math.min(values.length, maxRows || 10); i++) {
+    var row = values[i] || [];
+    if (names.every(function (n) { return headerIndex_(row, n) >= 0; })) return i;
+  }
+  return -1;
+}
+
+/** Stops with every problem listed (at most 15 shown). */
+function throwIfProblems_(problems, intro, outro) {
+  if (!problems.length) return;
+  var shown = problems.slice(0, 15).join('; ') + (problems.length > 15 ? '; and ' + (problems.length - 15) + ' more' : '');
+  throw new Error(intro + ' ' + shown + '.' + (outro ? ' ' + outro : ''));
+}
+
+/**
+ * Rule 15.2: the month's ending inventory from the workbook's Variance Overview (calculated values):
+ * [{group: Location, sku, qty: Actual Ending Inventory}] for every row with a SKU (ADS, Amazon, each MFG).
+ */
+function eomInventoryFromVariance_(values, tabName) {
+  var H = ['Location', 'SKU', 'Actual Ending Inventory'];
+  var hr = findHeaderRow_(values, H);
+  if (hr < 0) throw new Error('The "' + tabName + '" tab has no header row with ' + H.join(', ') + '. Run buildEOM for this month first.');
+  var h = values[hr], li = headerIndex_(h, H[0]), si = headerIndex_(h, H[1]), ai = headerIndex_(h, H[2]);
+  var out = [], problems = [];
+  for (var i = hr + 1; i < values.length; i++) {
+    var r = values[i], sku = cleanSku_(r[si]);
+    if (!sku) continue;
+    var loc = textCell_(r[li]).trim();
+    if (!loc) { problems.push('row ' + (i + 1) + ' (SKU ' + sku + ') has no Location'); continue; }
+    if (typeof r[ai] !== 'number') { problems.push('row ' + (i + 1) + ' (' + loc + ' ' + sku + ') shows "' + textCell_(r[ai]) + '"'); continue; }
+    out.push({ group: loc, sku: sku, qty: r[ai] });
+  }
+  throwIfProblems_(problems, 'Nothing was written to Ops Hub: Actual Ending Inventory on "' + tabName + '" is not a number in', 'Fix the workbook, then run writeOpsHub again.');
+  if (!out.length) throw new Error('The "' + tabName + '" tab has no rows. Run buildEOM for this month first.');
+  return out;
+}
+
+/**
+ * Rule 15.3: units sold per channel from the workbook's Outbound Summary (calculated values):
+ * [{group: Channel, sku, qty: Units}] — every SKU row × every channel (All Channels left out). Channel names
+ * come from the row above the "Units" headers, so the tab's column order doesn't matter.
+ */
+function soldByChannelFromOutbound_(values, tabName) {
+  var hr = findHeaderRow_(values, ['SKU', 'Units']);
+  if (hr < 1) throw new Error('The "' + tabName + '" tab has no "SKU … Units" header row. Run buildEOM for this month first.');
+  var h = values[hr], above = values[hr - 1], si = headerIndex_(h, 'SKU');
+  var cols = [];
+  h.forEach(function (x, j) {
+    if (normHeader_(x) !== 'units') return;
+    var ch = textCell_(above[j]).trim();
+    if (ch && ch.toLowerCase() !== 'all channels') cols.push({ j: j, channel: ch });
+  });
+  var expected = CONFIG.OUTBOUND_CHANNELS.concat([CONFIG.AMAZON_CHANNEL_LABEL]);
+  var missing = expected.filter(function (c) { return !cols.some(function (x) { return x.channel.toLowerCase() === c.toLowerCase(); }); });
+  if (missing.length) throw new Error('The "' + tabName + '" tab has no Units column for: ' + missing.join(', ') + '. Run buildEOM for this month again.');
+  var out = [], problems = [];
+  for (var i = hr + 1; i < values.length; i++) {
+    var r = values[i], sku = cleanSku_(r[si]);
+    if (!sku || sku.toUpperCase() === 'TOTAL') continue;
+    cols.forEach(function (c) {
+      var u = r[c.j];
+      if (typeof u !== 'number') { problems.push('row ' + (i + 1) + ' (' + sku + ', ' + c.channel + ') shows "' + textCell_(u) + '"'); return; }
+      out.push({ group: c.channel, sku: sku, qty: u });
+    });
+  }
+  throwIfProblems_(problems, 'Nothing was written to Ops Hub: Units on "' + tabName + '" is not a number in', 'Fix the workbook, then run writeOpsHub again.');
+  return out;
+}
+
+/**
+ * Rule 15.4: the month's kit lines from the workbook's Work Orders tab (calculated values):
+ * [{serial, qty: Pieces, sku, cost: Rate, wo}] for every line with Pieces ≠ 0. A line with no SKU (rule 5.5a),
+ * no Rate, or dated outside the month stops the run — wo_log would get a wrong or blank row.
+ */
+function kitLinesFromWorkOrders_(values, m, tabName) {
+  var H = ['Work Order', 'Date', 'SKU', 'Pieces', 'Rate'];
+  if (!values.length || findHeaderRow_(values, H, 1) !== 0) throw new Error('The "' + tabName + '" tab has no header row with ' + H.join(', ') + '. Run buildEOM for this month first.');
+  var h = values[0], ix = {};
+  H.forEach(function (n) { ix[n] = headerIndex_(h, n); });
+  var out = [], noSku = [], problems = [];
+  for (var i = 1; i < values.length; i++) {
+    var r = values[i];
+    if (H.every(function (n) { return blankCell_(r[ix[n]]); })) continue;
+    var wo = textCell_(r[ix['Work Order']]).trim(), where = wo + ' (row ' + (i + 1) + ')';
+    var qty = r[ix.Pieces];
+    if (typeof qty !== 'number') { problems.push(where + ': Pieces "' + textCell_(qty) + '" is not a number'); continue; }
+    if (qty === 0) continue;
+    var sku = cleanSku_(r[ix.SKU]);
+    if (!sku) { noSku.push(where + ', ' + qty + ' kits'); continue; }
+    var serial;
+    try { serial = parseMDY_(r[ix.Date], ''); } catch (e) { problems.push(where + ': Date "' + textCell_(r[ix.Date]) + '" is not a date'); continue; }
+    if (serial < m.firstSerial || serial > m.endSerial) { problems.push(where + ': dated ' + serialToMDY_(serial) + ', outside ' + m.label); continue; }
+    if (typeof r[ix.Rate] !== 'number') { problems.push(where + ': Rate "' + textCell_(r[ix.Rate]) + '" is not a number'); continue; }
+    out.push({ serial: serial, qty: qty, sku: sku, cost: r[ix.Rate], wo: wo });
+  }
+  throwIfProblems_(noSku, 'Nothing was written to Ops Hub: these work-order lines on "' + tabName + '" have no SKU:',
+    'Type the SKU on the WO SKU Fixes tab, run buildEOM again, then run writeOpsHub.');
+  throwIfProblems_(problems, 'Nothing was written to Ops Hub: problems on "' + tabName + '":', 'Fix the work-order report, run buildEOM again, then run writeOpsHub.');
+  return out;
+}
+
+/** Rule 15.5: SKU → description from the workbook's SKU List tab ("(no description)" counts as none). */
+function skuDescsFromList_(values) {
+  var out = {};
+  var hr = findHeaderRow_(values, ['SKU', 'Description'], 3);
+  if (hr < 0) return out;
+  var si = headerIndex_(values[hr], 'SKU'), di = headerIndex_(values[hr], 'Description');
+  for (var i = hr + 1; i < values.length; i++) {
+    var sku = cleanSku_(values[i][si]), d = textCell_(values[i][di]).trim();
+    if (sku && d && d !== CONFIG.NO_DESCRIPTION_TEXT) out[sku] = d;
+  }
+  return out;
+}
+
+/**
+ * Rules 15.2 / 15.3: what to write on a "one row per group + SKU, one column per month" tab
+ * (inventory_eom: group = Location; sell_thru monthly: group = Channel).
+ *   values : the whole tab as calculated values, dates as date numbers. Row cfg.headerRow holds the headers;
+ *            month columns are the header cells holding a date (the month-end date).
+ *   data   : [{group, sku, qty}] — repeated group + SKU pairs are added together.
+ * The month's column is the one headed with this month's end date. If there is none, it is added right after
+ * the last month column, which must be LAST month (months stay in order, never a gap). Every existing row gets
+ * a number in that column (0 when the month had none). A group + SKU not on the tab is added at the bottom —
+ * only when its number isn't 0. Group matching ignores capitals; SKUs match as text ("10030" = 10030).
+ * Returns {col, isNew, copyFromCol, headerSerial, firstRow, colValues (rows firstRow…), newRows:[{row, group, sku,
+ * code, desc}], templateRow, codeCol, descCol, groupCol, skuCol, updated, added, rowsNeeded, colsNeeded}.
+ */
+function planMonthColumn_(values, cfg, m, data, descs) {
+  var label = 'Ops Hub tab "' + cfg.sheetName + '"';
+  var hIdx = cfg.headerRow - 1;
+  var header = values[hIdx];
+  if (!header) throw new Error(label + ' has no header row (row ' + cfg.headerRow + ').');
+  var gi = requireHeader_(header, cfg.group, label + ' (row ' + cfg.headerRow + ')');
+  var si = requireHeader_(header, cfg.sku, label + ' (row ' + cfg.headerRow + ')');
+  var ci = cfg.code ? headerIndex_(header, cfg.code) : -1;
+  var di = cfg.desc ? headerIndex_(header, cfg.desc) : -1;
+  var width = 0;
+  values.forEach(function (r) { if (r.length > width) width = r.length; });
+
+  // Month columns: header cells after the key columns that hold a date number.
+  var firstMonth = Math.max(gi, si, ci, di) + 1;
+  var months = [];
+  for (var j = firstMonth; j < header.length; j++) if (typeof header[j] === 'number' && header[j] > 20000) months.push({ j: j, serial: header[j] });
+  if (!months.length) throw new Error(label + ': no month columns found in row ' + cfg.headerRow + ' (dates like Sep 2026).');
+  var same = months.filter(function (x) { return x.serial === m.endSerial; });
+  if (same.length > 1) throw new Error(label + ' has ' + same.length + ' columns for ' + m.shortLabel + ' in row ' + cfg.headerRow + '. Keep only one.');
+  var col, isNew, last = months[months.length - 1];
+  if (same.length) {
+    col = same[0].j; isNew = false;
+  } else {
+    if (last.serial !== m.prevEndSerial) {
+      throw new Error(label + ' has no ' + m.shortLabel + ' column, and its last month column is ' + serialMonthLabel_(last.serial) +
+        ', not ' + serialMonthLabel_(m.prevEndSerial) + '. Months are added in order with no gaps: write ' + serialMonthLabel_(m.prevEndSerial) +
+        ' first (or add its column by hand), then run again.');
+    }
+    col = last.j + 1; isNew = true;
+    var used = [];
+    values.forEach(function (r, i) { if (!blankCell_(r[col])) used.push('row ' + (i + 1)); });
+    if (used.length) {
+      throw new Error(label + ': the column after ' + serialMonthLabel_(last.serial) + ' (column ' + colLetter_(col + 1) + ') is where ' + m.shortLabel +
+        ' goes, but it is not empty (' + used.slice(0, 5).join(', ') + '). Clear it or move what is there, then run again.');
+    }
+  }
+
+  // Existing rows, keyed by group + SKU.
+  var key = function (g, s) { return String(g).trim().toLowerCase() + '|' + s; };
+  var rowOf = {}, dupes = [], lastData = hIdx;
+  for (var i = hIdx + 1; i < values.length; i++) {
+    var g = textCell_(values[i][gi]).trim(), s = cleanSku_(values[i][si]);
+    if (!g && !s) continue;
+    if (!g || !s) throw new Error(label + ', row ' + (i + 1) + ' has a ' + (g ? cfg.group + ' but no ' + cfg.sku : cfg.sku + ' but no ' + cfg.group) + '. Fill it in or clear the row, then run again.');
+    var k = key(g, s);
+    if (rowOf[k] !== undefined) dupes.push(g + ' ' + s + ' (rows ' + (rowOf[k] + 1) + ' and ' + (i + 1) + ')');
+    else rowOf[k] = i;
+    lastData = i;
+  }
+  if (dupes.length) throw new Error(label + ' has the same ' + cfg.group + ' + ' + cfg.sku + ' twice: ' + dupes.join('; ') + '. Merge them into one row, then run again.');
+
+  // This month's numbers by group + SKU (in data order).
+  var totals = {}, order = [];
+  data.forEach(function (d) {
+    var k = key(d.group, d.sku);
+    if (totals[k] === undefined) { totals[k] = 0; order.push(d); }
+    totals[k] += d.qty;
+  });
+  var round = function (x) { return Math.round(x * 1e6) / 1e6; };
+
+  var newRows = [];
+  order.forEach(function (d) {
+    var k = key(d.group, d.sku);
+    if (rowOf[k] !== undefined || round(totals[k]) === 0) return;
+    newRows.push({ row: lastData + 2 + newRows.length, group: d.group, sku: d.sku, code: d.group + d.sku,
+      desc: (descs && descs[d.sku]) || '', qty: round(totals[k]) });
+  });
+  var firstRow = cfg.headerRow + 1;
+  var lastRow = Math.max(lastData + 1, firstRow - 1) + newRows.length;
+  var colValues = [], updated = 0;
+  for (var r = firstRow; r <= lastRow; r++) {
+    var idx = r - 1;
+    if (idx <= lastData) {
+      var gg = textCell_((values[idx] || [])[gi]).trim(), ss = cleanSku_((values[idx] || [])[si]);
+      if (!gg && !ss) { colValues.push([isNew ? '' : ((values[idx] || [])[col] === undefined ? '' : values[idx][col])]); continue; }
+      var kk = key(gg, ss);
+      colValues.push([totals[kk] === undefined ? 0 : round(totals[kk])]);
+      updated++;
+    } else {
+      colValues.push([newRows[r - lastData - 2].qty]);
+    }
+  }
+  return {
+    col: col + 1, isNew: isNew, copyFromCol: isNew ? last.j + 1 : null, headerSerial: m.endSerial,
+    firstRow: firstRow, lastRow: lastRow, lastDataRowBefore: lastData + 1, colValues: colValues, newRows: newRows,
+    templateRow: lastData >= hIdx + 1 ? lastData + 1 : null,
+    groupCol: gi + 1, skuCol: si + 1, codeCol: ci >= 0 ? ci + 1 : null, descCol: di >= 0 ? di + 1 : null,
+    updated: updated, added: newRows.length, rowsNeeded: lastRow, colsNeeded: col + 1, width: width
+  };
+}
+
+/** Rule 15.4: row comparison key for wo_log (numbers rounded so 0.38 = 0.3800000001). */
+function woLogRowKey_(cells) {
+  return cells.map(function (v) {
+    if (typeof v === 'number') return String(Math.round(v * 1e6) / 1e6);
+    return v === null || v === undefined ? '' : String(v).trim();
+  }).join('|');
+}
+
+/**
+ * Rule 15.4: how wo_log must change so its rows dated in month m are exactly the month's kit lines.
+ * `values` = the whole tab (row 1 = headers), dates as date numbers. Rows dated in the month are replaced;
+ * every other row is kept, in order. The month's rows go where its old rows were (else before the first
+ * later-dated row, else at the end), oldest first. Only Date / Quantity / SKU / Cost are written.
+ * Returns {cols (1-based), changed, firstRow, rows ([date, qty, sku, cost] from firstRow; blank rows clear what
+ * moved up), removed, added, monthFirstRow, monthLastRow}.
+ */
+function planWoLog_(values, kits, m) {
+  var W = CONFIG.OPS_HUB_WRITE.woLog, H = W.headers;
+  var tab = 'Ops Hub tab "' + W.sheetName + '"';
+  if (!values.length) throw new Error(tab + ' is empty — it needs the headers ' + [H.date, H.qty, H.sku, H.cost].join(', ') + ' in row 1.');
+  var keys = ['date', 'qty', 'sku', 'cost'];
+  var cols = {};
+  keys.forEach(function (k) { cols[k] = requireHeader_(values[0], H[k], tab + ' (row 1)'); }); // first match: the rate table to the right also has "SKU"
+  var cell = function (r, k) { return r[cols[k]]; };
+
+  var last = 0;
+  for (var i = 1; i < values.length; i++) if (keys.some(function (k) { return !blankCell_(cell(values[i], k)); })) last = i;
+  var existing = [];
+  for (i = 1; i <= last; i++) {
+    var r = values[i];
+    var empty = keys.every(function (k) { return blankCell_(cell(r, k)); });
+    var serial = '';
+    if (!blankCell_(cell(r, 'date'))) {
+      try { serial = parseMDY_(cell(r, 'date'), ''); } catch (e) {
+        throw new Error(tab + ', row ' + (i + 1) + ': ' + H.date + ' "' + textCell_(cell(r, 'date')) + '" is not a date. Fix it, then run again.');
+      }
+    } else if (!empty) {
+      throw new Error(tab + ', row ' + (i + 1) + ' has a ' + H.qty + '/' + H.sku + '/' + H.cost + ' but no ' + H.date + '. Fill in the date or clear the row, then run again.');
+    }
+    existing.push({ row: i + 1, serial: serial,
+      cells: [serial, blankCell_(cell(r, 'qty')) ? '' : cell(r, 'qty'), cleanSku_(cell(r, 'sku')), blankCell_(cell(r, 'cost')) ? '' : cell(r, 'cost')] });
+  }
+
+  var fresh = kits.map(function (l, n) { return { serial: l.serial, n: n, cells: [l.serial, l.qty, l.sku, l.cost] }; })
+    .sort(function (a, b) { return a.serial - b.serial || a.n - b.n; });
+  var inMonth = function (e) { return e.serial !== '' && e.serial >= m.firstSerial && e.serial <= m.endSerial; };
+  var old = existing.filter(inMonth);
+  var kept = existing.filter(function (e) { return !inMonth(e); });
+  var at;
+  if (old.length) {
+    at = kept.filter(function (e) { return e.row < old[0].row; }).length;
+  } else {
+    at = kept.length;
+    for (i = 0; i < kept.length; i++) if (kept[i].serial !== '' && kept[i].serial > m.endSerial) { at = i; break; }
+  }
+  var cellsOf = function (e) { return e.cells; };
+  var target = kept.slice(0, at).map(cellsOf).concat(fresh.map(cellsOf), kept.slice(at).map(cellsOf));
+  var before = existing.map(cellsOf);
+  var size = Math.max(target.length, before.length);
+  var blank = ['', '', '', ''];
+  var first = -1;
+  for (i = 0; i < size; i++) if (woLogRowKey_(target[i] || blank) !== woLogRowKey_(before[i] || blank)) { first = i; break; }
+  var rows = [];
+  if (first >= 0) for (i = first; i < size; i++) rows.push(target[i] || blank.slice());
+  var colsOut = {};
+  keys.forEach(function (k) { colsOut[k] = cols[k] + 1; });
+  return {
+    cols: colsOut, changed: first >= 0, firstRow: first >= 0 ? first + 2 : null, rows: rows,
+    removed: old.length, added: fresh.length, monthFirstRow: at + 2, monthLastRow: at + 1 + fresh.length
+  };
+}
+
+/**
+ * Rule 15.5: SKUs written anywhere this run that sku_matrix doesn't list yet. Returns {startRow, rows:[[sku, desc, status]],
+ * cols {sku, desc, status} (1-based)}; rows go right after the last row with a SKU.
+ */
+function planSkuMatrix_(values, skus, descs) {
+  var S = CONFIG.OPS_HUB_WRITE.skuMatrix, H = S.headers;
+  var tab = 'Ops Hub tab "' + S.sheetName + '"';
+  if (!values.length) throw new Error(tab + ' is empty — it needs the headers ' + [H.sku, H.desc, H.status].join(', ') + ' in row 1.');
+  var cols = {};
+  ['sku', 'desc', 'status'].forEach(function (k) { cols[k] = requireHeader_(values[0], H[k], tab + ' (row 1)'); });
+  var have = {}, last = 0;
+  for (var i = 1; i < values.length; i++) {
+    var s = cleanSku_(values[i][cols.sku]);
+    if (s) { have[s] = true; last = i; }
+  }
+  var add = [];
+  skus.forEach(function (s) { if (s && !have[s]) { have[s] = true; add.push([s, (descs && descs[s]) || '', S.newStatus]); } });
+  return { startRow: last + 2, rows: add, cols: { sku: cols.sku + 1, desc: cols.desc + 1, status: cols.status + 1 } };
+}
+
+/**
+ * Rule 15: every write planned from the workbook's tabs and the Ops Hub tabs (all as calculated values,
+ * dates as date numbers). Stops before anything is written if any input is wrong.
+ */
+function planOpsHubWrite_(wbValues, hubValues, m) {
+  var t = tabNames_(m), W = CONFIG.OPS_HUB_WRITE;
+  var inventory = eomInventoryFromVariance_(wbValues.variance, t.variance);
+  var sold = soldByChannelFromOutbound_(wbValues.outbound, t.outbound);
+  var kits = kitLinesFromWorkOrders_(wbValues.workOrders, m, t.workOrders);
+  var descs = skuDescsFromList_(wbValues.skuList || []);
+  // Rule 15.5: every SKU that lands on an Ops Hub tab with a number other than 0, or in a kit line.
+  var nonZero = function (d) { return Math.round(d.qty * 1e6) !== 0; };
+  var skus = uniqueSorted_([].concat(inventory.filter(nonZero).map(function (d) { return d.sku; }), sold.filter(nonZero).map(function (d) { return d.sku; }),
+    kits.map(function (k) { return k.sku; })));
+  return {
+    month: m,
+    skuMatrix: planSkuMatrix_(hubValues.skuMatrix, skus, descs),
+    woLog: planWoLog_(hubValues.woLog, kits, m),
+    inventoryEom: planMonthColumn_(hubValues.inventoryEom, W.inventoryEom, m, inventory, descs),
+    sellThru: planMonthColumn_(hubValues.sellThru, W.sellThru, m, sold, descs)
+  };
+}
+
+/** Rule 15: plain-English lines saying what writeOpsHub did (run log). */
+function opsHubSummary_(plan) {
+  var m = plan.month, W = CONFIG.OPS_HUB_WRITE, out = [];
+  [['inventoryEom', 'rows'], ['sellThru', 'rows']].forEach(function (p) {
+    var x = plan[p[0]];
+    out.push(W[p[0]].sheetName + ': ' + m.shortLabel + ' column ' + colLetter_(x.col) + (x.isNew ? ' added' : ' replaced') + ' — ' +
+      x.updated + ' existing rows filled' + (x.added ? ', ' + x.added + ' new rows added at the bottom (' +
+      x.newRows.map(function (r) { return r.group + ' ' + r.sku; }).join(', ') + ')' : '') + '.');
+  });
+  var wo = plan.woLog;
+  out.push(W.woLog.sheetName + ': ' + (wo.added ? 'rows ' + wo.monthFirstRow + '–' + wo.monthLastRow + ' hold the ' + wo.added + ' ' + m.label + ' kit lines' : 'no ' + m.label + ' kit lines') +
+    (wo.changed ? ' (replaced ' + wo.removed + ' ' + m.label + ' row' + (wo.removed === 1 ? '' : 's') + ' that were there).' : ' — already up to date.'));
+  var sk = plan.skuMatrix;
+  out.push(W.skuMatrix.sheetName + ': ' + (sk.rows.length ? sk.rows.length + ' new SKU(s) added with Status ' + W.skuMatrix.newStatus + ': ' +
+    sk.rows.map(function (r) { return r[0]; }).join(', ') + '.' : 'no new SKUs.'));
+  return out;
 }
 
 // ===== Sheets.gs =====
