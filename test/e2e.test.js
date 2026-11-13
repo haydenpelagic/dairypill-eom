@@ -135,7 +135,7 @@ test('1. first run for September builds the full workbook', () => {
   assert.deepEqual(c80090.slice(1), ['90ct Pouch', '', '', '', '=IF(COUNT(C' + (cogsTab.indexOf(c80090) + 1) + ',D' + (cogsTab.indexOf(c80090) + 1) +
     ',E' + (cogsTab.indexOf(c80090) + 1) + ')=0,"",SUM(C' + (cogsTab.indexOf(c80090) + 1) + ',D' + (cogsTab.indexOf(c80090) + 1) + ',E' + (cogsTab.indexOf(c80090) + 1) + '))']);
   assert.equal(wb.value(tabs.variance, r, 11), 'NO COST', 'no cost typed yet → NO COST, not $0');
-  assert.equal(wb.value(tabs.valuation, rowOf(ss, tabs.valuation, 'ADS', '80090'), 9), 'NO COST');
+  assert.equal(wb.value(tabs.valuation, rowOf(ss, tabs.valuation, 'ADS', '80090'), 10), 'NO COST'); // Total / Unit (col J)
   // First run: MFG start comes from the hand-built workbook; MFG Counts is pre-filled with its rows, quantities to type
   const checks = ss.getSheetByName(tabs.checks).rawValues();
   const res = (label) => wb.value(tabs.checks, checks.findIndex((x) => x[1] === label) + 1, 3);

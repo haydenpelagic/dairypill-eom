@@ -130,7 +130,11 @@ var CONFIG = {
   // each unit sold of any bundle SKU (has a comma) with a pouch from `bundlePouches` in it — one mailer per
   // bundle, not per pouch (owner, 2026-11-10). Jar bundles (20001,20002) have no pouch → no mailer.
   // Shopify only: manualorder_log shipments use no mailer (owner, 2026-11-10).
-  MAILER_RULE: { sku: '41001', perUnit: 1, soldSkus: ['80030', '80090', '80090,80090', '80090,80090,80090'], bundlePouches: ['80030', '80090'] },
+  // Rule 8.1b: a pouch on the shelf has no mailer in it. On the workbook's BOM tab, the lines from these SKUs to
+  // the mailer are marked `bomFlag` in column `bomFlagHeader`; that mailer is taken out of on-hand cost
+  // (Variance Overview, Inventory Valuation) and added back once per Shopify unit on Outbound Summary (owner, 2026-11-13).
+  MAILER_RULE: { sku: '41001', perUnit: 1, soldSkus: ['80030', '80090', '80090,80090', '80090,80090,80090'], bundlePouches: ['80030', '80090'],
+                 bomFlagHeader: 'Mailer added when shipped', bomFlag: 'Yes' },
 
   // ---- Rule 5.5: work-order lines that are fees, not kits ---------------------
   WORK_ORDER_FEE_JOBS: ['Setup Fee'],

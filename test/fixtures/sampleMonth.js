@@ -103,7 +103,12 @@ function sampleRaw(year, monthIndex) {
     ['50001', 'Key Pod Black', '50001', 'Key Pod Black', '1'],
     ['X1', 'Has Tin', '51002', 'Bold Travel Tin', '1'],
     ['X2', 'Gold Kit', '70003', 'Lactase', '0.005'],
-    ['X3', 'Sample Kit', 'A80004', 'Amazon Sample Kit', '1']];
+    ['X3', 'Sample Kit', 'A80004', 'Amazon Sample Kit', '1'],
+    // Rule 8.1b: like the Ops Hub, a pouch sold on its own lists its mailer; a kit's mailer is inside the kit (X4).
+    ['80030', '30ct Pouch', '41001', 'Mailer', '1'],
+    ['80090', '90ct Pouch', '41001', 'Mailer', '1'],
+    ['80090,80090', '180ct Refill', '41001', 'Mailer', '1'],
+    ['X4', 'Tin Kit', '41001', 'Mailer', '1']];
   const cogs = (sku, a, b, c) => [sku, '', a, b, c, Math.round((a + b + c) * 100) / 100];
   const cogsRows = [cogs('10030', 6.76, 0.08, 0.35), cogs('80030', 2.60, 0.01, 0.35), cogs('80090', 5.78, 0.08, 1.04), cogs('51002', 0.45, 0, 0),
     cogs('50001', 2.10, 0, 0), cogs('20001', 0.59, 0.05, 0), cogs('A0030', 2.52, 0, 0.35), cogs('70003', 147, 0, 50.96),

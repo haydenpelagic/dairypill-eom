@@ -134,7 +134,11 @@ var CONFIG = {
   // each unit sold of any bundle SKU (has a comma) with a pouch from `bundlePouches` in it — one mailer per
   // bundle, not per pouch (owner, 2026-11-10). Jar bundles (20001,20002) have no pouch → no mailer.
   // Shopify only: manualorder_log shipments use no mailer (owner, 2026-11-10).
-  MAILER_RULE: { sku: '41001', perUnit: 1, soldSkus: ['80030', '80090', '80090,80090', '80090,80090,80090'], bundlePouches: ['80030', '80090'] },
+  // Rule 8.1b: a pouch on the shelf has no mailer in it. On the workbook's BOM tab, the lines from these SKUs to
+  // the mailer are marked `bomFlag` in column `bomFlagHeader`; that mailer is taken out of on-hand cost
+  // (Variance Overview, Inventory Valuation) and added back once per Shopify unit on Outbound Summary (owner, 2026-11-13).
+  MAILER_RULE: { sku: '41001', perUnit: 1, soldSkus: ['80030', '80090', '80090,80090', '80090,80090,80090'], bundlePouches: ['80030', '80090'],
+                 bomFlagHeader: 'Mailer added when shipped', bomFlag: 'Yes' },
 
   // ---- Rule 5.5: work-order lines that are fees, not kits ---------------------
   WORK_ORDER_FEE_JOBS: ['Setup Fee'],
@@ -1769,12 +1773,20 @@ function bomFromSource_(values) {
   return { rows: rows, descs: descs, identity: identity, duplicates: duplicates, invalid: invalid };
 }
 
+/** Rule 8.1b: is this BOM line the mailer a pouch gets only when it ships on its own (not in the pouch on the shelf)? */
+function mailerAddedWhenShipped_(parent, child) {
+  return child === CONFIG.MAILER_RULE.sku && usesMailer_(parent);
+}
+
 function bomModel_(name, bom, todayStr) {
-  var values = [['Parent SKU', 'Parent Desc', 'Child SKU', 'Child Desc', 'Qty', '',
+  var mr = CONFIG.MAILER_RULE;
+  var values = [['Parent SKU', 'Parent Desc', 'Child SKU', 'Child Desc', 'Qty', mr.bomFlagHeader,
     'Copied from Ops Hub 2.0 "' + CONFIG.BOM_SOURCE.sheetName + '" tab (columns ' + CONFIG.BOM_SOURCE.columns + ') on ' + todayStr +
-    '. Rows where Parent = Child removed (' + bom.identity + '), duplicate rows removed (' + bom.duplicates.length + ').']];
-  bom.rows.forEach(function (r) { values.push(r.concat(['', ''])); });
-  return model_(name, values, { textCols: [0, 1, 2, 3], numberFormats: { 4: '0.#########' }, tabColor: TAB_COLORS.reference });
+    '. Rows where Parent = Child removed (' + bom.identity + '), duplicate rows removed (' + bom.duplicates.length + '). ' +
+    '"' + mr.bomFlag + '" in column F = the mailer a pouch gets only when it ships on its own: it is not in the pouch on the shelf, ' +
+    'so it is taken out of on-hand cost and added back on Outbound Summary (Rule 8.1b).']];
+  bom.rows.forEach(function (r) { values.push(r.concat([mailerAddedWhenShipped_(r[0], r[2]) ? mr.bomFlag : '', ''])); });
+  return model_(name, values, { textCols: [0, 1, 2, 3, 5], numberFormats: { 4: '0.#########' }, tabColor: TAB_COLORS.reference });
 }
 
 /** Rule 6.4: SKU -> description from the BOM; bundles described by their components. */
@@ -1935,17 +1947,56 @@ function cogsTotalExpr_(ctx, skuExpr, positiveOnly) {
     num('INDEX(' + val + ',MATCH(' + skuExpr + '*1,' + key + ',0))') + ')';
 }
 
+/** Rule 8.1b: the mailer's COGS Total / Unit as an expression (no "=") that ERRORS when the mailer has no cost. */
+function mailerCostExpr_(ctx) { return cogsTotalExpr_(ctx, q_(CONFIG.MAILER_RULE.sku), false); }
+
 /**
- * Rule 11.2a: Outbound Summary Avg Cost / Unit. A plain SKU = its COGS Total / Unit (rule 6.2). A bundle SKU
+ * Rule 8.1b: the mailer dollars inside one unit's COGS cost that are NOT in the unit on the shelf: the qty on this
+ * SKU's BOM-tab lines marked "added when shipped" (column F) × the mailer's COGS Total / Unit. 0 when there is no
+ * such line (then the mailer's cost is not needed). `skuExpr` is a cell ("$B5") or a quoted SKU ("\"80030\"").
+ */
+function mailerInCostExpr_(ctx, skuExpr) {
+  var t = ctx.tabs;
+  var qty = 'SUMIFS(' + colRef_(t.bom, 'E') + ',' + colRef_(t.bom, 'A') + ',' + skuExpr + ',' + colRef_(t.bom, 'F') + ',' + q_(CONFIG.MAILER_RULE.bomFlag) + ')';
+  return 'IF(' + qty + '=0,0,' + qty + '*' + mailerCostExpr_(ctx) + ')';
+}
+
+/** Rule 8.1b: on-hand cost = COGS Total / Unit − the mailer added when shipped, as an expression that ERRORS when there is no cost. */
+function shelfCostExpr_(ctx, skuExpr, positiveOnly) {
+  return cogsTotalExpr_(ctx, skuExpr, positiveOnly) + '-' + mailerInCostExpr_(ctx, skuExpr);
+}
+
+/** Rule 8.1b / 9.3 / 10.1: on-hand cost per unit (Variance Overview, Inventory Valuation), or NO COST. */
+function shelfCostFormula_(ctx, skuCell) {
+  return '=IFERROR(' + shelfCostExpr_(ctx, skuCell, false) + ',' + q_(CONFIG.NO_COST_TEXT) + ')';
+}
+
+/** Rule 10.1: Inventory Valuation "Less: Mailer (added when shipped)" — the mailer dollars taken out of COGS (0 for most SKUs). */
+function mailerDeductionFormula_(ctx, skuCell) {
+  return '=IFERROR(' + mailerInCostExpr_(ctx, skuCell) + ',' + q_(CONFIG.NO_COST_TEXT) + ')';
+}
+
+/**
+ * Rule 11.2a / 8.1b: Outbound Summary Avg Cost / Unit. A plain SKU = its COGS Total / Unit (rule 6.2). A bundle SKU
  * ("80030,51002") = its own COGS Total / Unit when that is above $0, otherwise the sum of its parts
  * (split on commas exactly like the Bundle Map, rule 8.1: count × each part's COGS Total / Unit).
- * Any part without a cost → NO COST.
+ * A SKU that ships in a mailer on Shopify (rule 8.1a) = on-hand cost (own, or parts) + exactly ONE mailer:
+ * that is what one Shopify unit costs as shipped. Any part (or the mailer) without a cost → NO COST.
  */
 function outboundCostFormula_(ctx, sku, skuCell) {
-  var parts = splitBundle_(sku);
-  if (String(sku).indexOf(',') < 0 || !parts.length) return costLookup_(ctx, 'total', skuCell);
-  var sum = parts.map(function (p) { return (p.count === 1 ? '' : p.count + '*') + cogsTotalExpr_(ctx, q_(p.sku), false); }).join('+');
-  return '=IFERROR(' + cogsTotalExpr_(ctx, skuCell, true) + ',IFERROR(' + sum + ',' + q_(CONFIG.NO_COST_TEXT) + '))';
+  var parts = splitBundle_(sku), NC = q_(CONFIG.NO_COST_TEXT);
+  var mailer = usesMailer_(sku);
+  var plusMailer = mailer ? '+' + mailerCostExpr_(ctx) : '';
+  if (String(sku).indexOf(',') < 0 || !parts.length) {
+    return mailer ? '=IFERROR(' + shelfCostExpr_(ctx, skuCell, false) + plusMailer + ',' + NC + ')' : costLookup_(ctx, 'total', skuCell);
+  }
+  var partCost = function (p) {
+    var e = mailer ? '(' + shelfCostExpr_(ctx, q_(p.sku), false) + ')' : cogsTotalExpr_(ctx, q_(p.sku), false);
+    return (p.count === 1 ? '' : p.count + '*') + e;
+  };
+  var own = mailer ? shelfCostExpr_(ctx, skuCell, true) : cogsTotalExpr_(ctx, skuCell, true);
+  var sum = parts.map(partCost).join('+');
+  return '=IFERROR(' + own + plusMailer + ',IFERROR(' + sum + plusMailer + ',' + NC + '))';
 }
 
 /** Rule 11.2: description typed on the COGS tab (SKU matched as text, then as a number; blank → "(no description)"). */
@@ -2032,7 +2083,7 @@ function mfgVarianceRow_(ctx, b, r, k) {
     blankIf('E' + r + '+F' + r + '-G' + r),
     blankIf('SUM(' + C + 'C' + k + ')'),
     blankIf('I' + r + '-H' + r),
-    blankIf(inner(costLookup_(ctx, 'total', S))),
+    blankIf(inner(shelfCostFormula_(ctx, S))), // Rule 8.1b: on-hand cost (no mailer added when shipped)
     blankIf('IF(H' + r + '=0,0,IFERROR(H' + r + '*K' + r + ',' + q_(CONFIG.NO_COST_TEXT) + '))'),
     blankIf('IF(I' + r + '=0,0,IFERROR(I' + r + '*K' + r + ',' + q_(CONFIG.NO_COST_TEXT) + '))'),
     blankIf('IFERROR(M' + r + '-L' + r + ',' + q_(CONFIG.NO_COST_TEXT) + ')')
@@ -2064,7 +2115,7 @@ function varianceModel_(ctx, blocks) {
         '=E' + r + '+F' + r + '-G' + r,
         f.actual,
         '=I' + r + '-H' + r,
-        costLookup_(ctx, 'total', '$B' + r),
+        shelfCostFormula_(ctx, '$B' + r), // Rule 8.1b: on-hand cost (no mailer added when shipped)
         '=IF(H' + r + '=0,0,IFERROR(H' + r + '*K' + r + ',' + q_(CONFIG.NO_COST_TEXT) + '))',
         '=IF(I' + r + '=0,0,IFERROR(I' + r + '*K' + r + ',' + q_(CONFIG.NO_COST_TEXT) + '))',
         '=IFERROR(M' + r + '-L' + r + ',' + q_(CONFIG.NO_COST_TEXT) + ')']);
@@ -2094,7 +2145,9 @@ function varianceModel_(ctx, blocks) {
 // ---------------------------------------------------------------------------
 
 var VALUATION_HEADER = ['Location', 'SKU', 'Description', 'Categorization', 'Available Inventory', 'Base Cost',
-  'Freight In', 'Tariff', 'Total / Unit', 'Total Inventory Value'];
+  'Freight In', 'Tariff', 'Less: Mailer (added when shipped)', 'Total / Unit', 'Total Inventory Value'];
+// Rule 10.1: Total Inventory Value is the last column (the totals box and Checks 12.7 sum it).
+var VALUATION_VALUE_COL = colLetter_(VALUATION_HEADER.length);
 
 function categorizations_() {
   var out = [];
@@ -2109,7 +2162,7 @@ function valuationModel_(ctx, blocks) {
   var cats = categorizations_();
   var values = [
     ['Inventory Valuation — ' + ctx.month.label],
-    ['Available Inventory = Actual Ending Inventory on Variance Overview. Total Inventory Value = Available × (COGS + Freight + Tariffs). See RULES.md section 10.'],
+    ['Available Inventory = Actual Ending Inventory on Variance Overview. Total / Unit = COGS Base Cost + Freight In + Tariff − the mailer a pouch only gets when it ships (Rule 8.1b). Total Inventory Value = Available × Total / Unit. See RULES.md section 10.'],
     [],
     VALUATION_HEADER.slice()
   ];
@@ -2127,8 +2180,8 @@ function valuationModel_(ctx, blocks) {
         values.push(['=IF(' + V + 'B' + vr + '="","",' + V + 'A' + vr + ')', '=IF(' + V + 'B' + vr + '="","",' + V + 'B' + vr + ')',
           bi(inner(descLookup_(ctx, S))), bi(q_(b.categorization)), bi(V + 'I' + vr),
           bi(inner(costLookup_(ctx, 'cogs', S))), bi(inner(costLookup_(ctx, 'freight', S))), bi(inner(costLookup_(ctx, 'tariffs', S))),
-          bi(inner(costLookup_(ctx, 'total', S))),
-          bi('IF(E' + r + '=0,0,IFERROR(E' + r + '*I' + r + ',' + q_(CONFIG.NO_COST_TEXT) + '))')]);
+          bi(inner(mailerDeductionFormula_(ctx, S))), bi(inner(shelfCostFormula_(ctx, S))),
+          bi('IF(E' + r + '=0,0,IFERROR(E' + r + '*J' + r + ',' + q_(CONFIG.NO_COST_TEXT) + '))')]);
       }
       return;
     }
@@ -2137,8 +2190,8 @@ function valuationModel_(ctx, blocks) {
       values.push([b.label, sku, descLookup_(ctx, '$B' + r), b.categorization,
         '=SUMIFS(' + colRef_(t.variance, 'I') + ',' + colRef_(t.variance, 'A') + ',$A' + r + ',' + colRef_(t.variance, 'B') + ',$B' + r + ')',
         costLookup_(ctx, 'cogs', '$B' + r), costLookup_(ctx, 'freight', '$B' + r), costLookup_(ctx, 'tariffs', '$B' + r),
-        costLookup_(ctx, 'total', '$B' + r),
-        '=IF(E' + r + '=0,0,IFERROR(E' + r + '*I' + r + ',' + q_(CONFIG.NO_COST_TEXT) + '))']);
+        mailerDeductionFormula_(ctx, '$B' + r), shelfCostFormula_(ctx, '$B' + r), // Rule 8.1b
+        '=IF(E' + r + '=0,0,IFERROR(E' + r + '*J' + r + ',' + q_(CONFIG.NO_COST_TEXT) + '))']);
     });
   });
   // Rule 10.2: totals box to the right of the table — one line per categorization, then the total.
@@ -2148,10 +2201,10 @@ function valuationModel_(ctx, blocks) {
     while (values.length < r) values.push([]);
     var row = values[r - 1];
     while (row.length < labelCol - 1) row.push('');
-    row.push(label, i < cats.length ? '=SUMIFS(J:J,D:D,' + L + r + ')' : '=SUM(' + Vc + headerRow + ':' + Vc + (r - 1) + ')');
+    row.push(label, i < cats.length ? '=SUMIFS(' + VALUATION_VALUE_COL + ':' + VALUATION_VALUE_COL + ',D:D,' + L + r + ')' : '=SUM(' + Vc + headerRow + ':' + Vc + (r - 1) + ')');
   });
   var totalRow = headerRow + cats.length;
-  var nf = { 4: '#,##0.####', 5: '$#,##0.00', 6: '$#,##0.00', 7: '$#,##0.00', 8: '$#,##0.00', 9: '$#,##0.00' };
+  var nf = { 4: '#,##0.####', 5: '$#,##0.00', 6: '$#,##0.00', 7: '$#,##0.00', 8: '$#,##0.00', 9: '$#,##0.00', 10: '$#,##0.00' };
   var m = model_(t.valuation, values, {
     textCols: [1], textFromRow: headerRow + 1, textToRow: mfgFirst ? mfgFirst - 1 : null,
     numberFormats: nf, numberFromRow: headerRow + 1,
@@ -2175,25 +2228,29 @@ function outboundModel_(ctx, skus) {
   groups.forEach(function (g) { row3.push(g, ''); row4.push('Units', 'Total Cost'); });
   var values = [
     ['Outbound Summary — ' + ctx.month.label],
-    ['Units by channel; one row per SKU sold (Shopify bundles kept whole). Description comes from the COGS tab. Channel names in row 3 drive the formulas. Each channel = Shopify orders + Ops Hub ' + CONFIG.OPS_HUB.manualLog.sheetName + ' rows with that Channel (Samples comes only from the log). Amazon = ledger Customer Shipments; ' + CONFIG.OPS_HUB.amzLog.sheetName + ' units are not sales.'],
+    ['Units by channel; one row per SKU sold (Shopify bundles kept whole). Description comes from the COGS tab. Channel names in row 3 drive the formulas. Each channel = Shopify orders + Ops Hub ' + CONFIG.OPS_HUB.manualLog.sheetName + ' rows with that Channel (Samples comes only from the log). Amazon = ledger Customer Shipments; ' + CONFIG.OPS_HUB.amzLog.sheetName + ' units are not sales. Avg Cost of a pouch or pouch bundle = cost as shipped on Shopify, incl. one mailer (Rule 8.1b); ' + CONFIG.OPS_HUB.manualLog.sheetName + ' and Amazon units of it are costed without the mailer.'],
     row3, row4
   ];
   var first = values.length + 1;
+  var NC = q_(CONFIG.NO_COST_TEXT);
   skus.forEach(function (sku) {
     var r = values.length + 1;
     var row = [sku, cogsDescLookup_(ctx, '$A' + r), outboundCostFormula_(ctx, sku, '$A' + r)];
+    // Rule 8.1b: Avg Cost of a mailer SKU includes one mailer — charged on Shopify units only. manualorder_log
+    // units (samples, marketing, replacements) and Amazon units ship without one, so it is taken back off them.
+    var mailer = usesMailer_(sku), m = mailer ? mailerCostExpr_(ctx) : '';
     var unitCols = [];
     channels.forEach(function (ch, j) {
       var u = colLetter_(4 + 2 * j);
+      var logUnits = 'SUMIFS(' + colRef_(t.manualLog, 'D') + ',' + colRef_(t.manualLog, 'C') + ',$A' + r + ',' + colRef_(t.manualLog, 'B') + ',' + u + '$3)';
       var f = '=SUMIFS(' + colRef_(t.shopify, c.shop.qty) + ',' + colRef_(t.shopify, c.shop.sku) + ',$A' + r + ',' +
-        colRef_(t.shopify, c.shop.channel) + ',' + u + '$3)' +
-        '+SUMIFS(' + colRef_(t.manualLog, 'D') + ',' + colRef_(t.manualLog, 'C') + ',$A' + r + ',' + colRef_(t.manualLog, 'B') + ',' + u + '$3)';
-      row.push(f, '=IF(' + u + r + '=0,0,IFERROR(' + u + r + '*$C' + r + ',' + q_(CONFIG.NO_COST_TEXT) + '))');
+        colRef_(t.shopify, c.shop.channel) + ',' + u + '$3)' + '+' + logUnits;
+      row.push(f, '=IF(' + u + r + '=0,0,IFERROR(' + u + r + '*$C' + r + (mailer ? '-' + logUnits + '*' + m : '') + ',' + NC + '))');
       unitCols.push(u);
     });
     var au = colLetter_(4 + 2 * channels.length);
     row.push('=0-SUMIFS(' + colRef_(t.ledger, c.ledger.shipments) + ',' + colRef_(t.ledger, c.ledger.mapped) + ',$A' + r + ')',
-      '=IF(' + au + r + '=0,0,IFERROR(' + au + r + '*$C' + r + ',' + q_(CONFIG.NO_COST_TEXT) + '))');
+      '=IF(' + au + r + '=0,0,IFERROR(' + au + r + '*' + (mailer ? '($C' + r + '-' + m + ')' : '$C' + r) + ',' + NC + '))');
     unitCols.push(au);
     var costCols = unitCols.map(function (u) { return colLetter_(columnNumber_(u) + 1); });
     row.push('=' + unitCols.map(function (u) { return u + r; }).join('+'),
@@ -2278,8 +2335,12 @@ function checksModel_(ctx, info) {
   add('7', 'SKUs typed as numbers on the yellow tabs', flagIf_('COUNT(' + colRef_(t.adsReceipts, 'B') + ')',
     'SKU cells are stored as numbers — format the SKU column as Plain text and retype them'), '');
   add('7.2', 'ADS Receipts entered', '=IF(COUNTA(' + colRef_(t.adsReceipts, 'A') + ')<=1,"CHECK: none entered — correct only if ADS received nothing","OK")', '');
+  var ivTotal = q2_(t.valuation) + '!' + ctx.valuationTotalCell;
   add('12.7', 'Inventory Valuation total = sum of every row',
-    '=IF(ABS(' + q2_(t.valuation) + '!' + ctx.valuationTotalCell + '-SUM(' + colRef_(t.valuation, 'J') + '))<0.01,"OK","FLAG: totals do not tie — a row has a Categorization the totals box does not list")', '');
+    '=IF(ABS(' + ivTotal + '-SUM(' + colRef_(t.valuation, VALUATION_VALUE_COL) + '))<0.01,"OK","FLAG: totals do not tie — a row has a Categorization the totals box does not list")', '');
+  add('12.7a', 'Inventory Valuation total = Variance Overview Total Actual Cost',
+    '=IF(ABS(' + ivTotal + '-SUM(' + colRef_(t.variance, 'M') + '))<0.01,"OK","FLAG: the two totals differ — a row was added, copied, deleted or typed over on one of the two tabs")',
+    'Both tabs list the same rows at the same on-hand cost, so they must agree. A difference means one was changed by hand (e.g. a row copied twice) — compare the two tabs row by row.');
   add('12.8', 'Work orders parsed completely', 'OK',
     info.workOrders.lines + ' kit lines (' + info.workOrders.fees + ' fee lines skipped); line amounts $' + info.workOrders.lineTotal.toFixed(2) +
     ' = report TOTAL $' + info.workOrders.reportTotal.toFixed(2) + '; billing month ' + info.workOrders.month + '.');
@@ -2293,6 +2354,16 @@ function checksModel_(ctx, info) {
   add('8.2', 'Kits built that have no BOM rows', info.kitsWithoutBom.length ? 'FLAG: ' + info.kitsWithoutBom.length : 'OK',
     info.kitsWithoutBom.length ? 'Components not deducted for: ' + info.kitsWithoutBom.join(', ') + ' — add them to the Ops Hub BOM.' : '');
   add('6.1', 'BOM duplicate rows removed', info.bomDuplicates.length ? 'INFO' : 'OK', info.bomDuplicates.join('; '));
+  var ml = info.mailer, mrs = CONFIG.MAILER_RULE;
+  add('12.7b', 'Mailer: out of on-hand cost, into Outbound cost',
+    ml.noLine.length ? 'CHECK: ' + ml.noLine.length + ' SKU(s) with no mailer line on the BOM'
+      : '="INFO: "&SUMIFS(' + colRef_(t.bundleMap, 'E') + ',' + colRef_(t.bundleMap, 'B') + ',' + q_(mrs.sku) + ')&" mailers on Shopify orders, costed on Outbound Summary"',
+    (ml.lines.length ? 'Taken out of on-hand cost (BOM lines marked "' + mrs.bomFlag + '" in column F): ' + ml.lines.join('; ') + '. '
+      : 'No BOM line marks the mailer as added when shipped, so nothing is taken out of on-hand cost. ') +
+    'Outbound Avg Cost of these SKUs and of pouch bundles = on-hand cost + one mailer; charged on Shopify units only (' +
+    CONFIG.OPS_HUB.manualLog.sheetName + ' and Amazon units get none).' +
+    (ml.noLine.length ? ' No mailer line on the BOM for: ' + ml.noLine.join(', ') + ' — their COGS cost is taken as having no mailer in it and one is added on Outbound. ' +
+      'If their COGS cost already includes a mailer, add the mailer line in the Ops Hub BOM.' : ''));
   add('12.9', 'Starting balances came from', 'INFO', info.startSources);
   var tie = info.amzTie || {};
   var first = serialToMDY_(ctx.month.firstSerial), prevEnd = serialToMDY_(ctx.month.firstSerial - 1);
@@ -2364,8 +2435,8 @@ function readmeModel_(ctx) {
   var rows = [['Tab', 'What it is', 'Rule (RULES.md)'],
     [t.checks, 'QC only: automatic checks. Anything that says FLAG needs attention. Delete this tab before sending — nothing points at it.', '12'],
     [t.variance, 'Beginning + Receiving − Sold/Used = Expected; compared with Actual. One table: ADS rows, Amazon rows, then MFG (row by row from MFG Counts). Total Variance ($) to the right.', '9'],
-    [t.valuation, 'Actual ending units × COGS cost. Totals by categorization and TOTAL INVENTORY VALUE to the right.', '10'],
-    [t.outbound, 'Units and cost by channel for every SKU sold.', '11'],
+    [t.valuation, 'Actual ending units × on-hand cost (COGS cost less the mailer a pouch only gets when it ships). Totals by categorization and TOTAL INVENTORY VALUE to the right.', '10, 8.1b'],
+    [t.outbound, 'Units and cost by channel for every SKU sold. A pouch sold on Shopify is costed as shipped: on-hand cost + one mailer.', '11, 8.1b'],
     [t.mfgInv, 'YOU TYPE: EOM Qty (and Received Qty if any) per MFG + SKU. Starts with last month\'s MFG + SKU rows; add new ones at the bottom, reorder freely. Never overwritten.', '7.1'],
     [t.adsReceipts, 'YOU TYPE: PO Number, SKU, Qty received at ADS. Never overwritten.', '7.2'],
     [t.woFixes, 'YOU TYPE (when Checks asks): our SKU for work-order lines whose Job is blank or not a SKU. Kept month to month.', '5.5a'],
@@ -2384,7 +2455,7 @@ function readmeModel_(ctx) {
     [t.workOrders, 'ADS work orders (kits built), fee lines removed.', '5.5'],
     [t.manualLog, 'This month\'s rows of Ops Hub ' + CONFIG.OPS_HUB.manualLog.sheetName + ' (by Ship Date): hand-entered shipments out of ADS, with their sales channel.', '5.6'],
     [t.amzLog, 'This month\'s rows of Ops Hub ' + CONFIG.OPS_HUB.amzLog.sheetName + ' (by Ship Date): units shipped out of ADS to Amazon. They only reduce ADS — Amazon\'s side is the ledger.', '5.6'],
-    [t.bom, 'Bill of materials copied from Ops Hub on build day.', '6.1'],
+    [t.bom, 'Bill of materials copied from Ops Hub on build day. Column F marks the mailer lines that are only added when a pouch ships.', '6.1, 8.1b'],
     [t.skuList, 'SKU descriptions from the BOM.', '6.4'],
     ['', '', ''],
     ['Colors', 'Green = summaries, Yellow = you type here, Blue = reference, Purple = helpers, Gray = raw reports.', '']];
@@ -2557,7 +2628,15 @@ function buildWorkbookModel_(inputs) {
     if (typeof r[totalIdx] === 'number') cogsFilled[cleanSku_(r[cogsKeyIdx])] = true;
   });
   var costedSkus = uniqueSorted_([].concat(adsSkus, amzSkus, outboundSkus, blocks.slice(2).reduce(function (a, b) { return a.concat(b.skus); }, [])));
+  // Rule 8.1b: BOM lines whose mailer is only added when the item ships; mailer SKUs with a COGS row but no such line.
+  var mailerLines = bom.rows.filter(function (r) { return mailerAddedWhenShipped_(r[0], r[2]); });
+  var hasMailerLine = {};
+  mailerLines.forEach(function (r) { hasMailerLine[r[0]] = true; });
   var info = {
+    mailer: {
+      lines: mailerLines.map(function (r) { return r[0] + ' → ' + r[4] + ' × ' + r[2]; }),
+      noLine: costedSkus.filter(function (s) { return usesMailer_(s) && cogsFilled[s] && !hasMailerLine[s]; }) // own cost typed, no BOM mailer line
+    },
     // Rule 11.2a: a bundle not on COGS is costed from its parts (bundles only appear on Outbound Summary), so it is only listed when a part is missing too.
     noCostSkus: costedSkus.filter(function (s) {
       if (cogsKeys[s]) return false;

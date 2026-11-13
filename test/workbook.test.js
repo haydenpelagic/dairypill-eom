@@ -110,9 +110,13 @@ test('Rule 7.1 / 4.4: a new MFG Counts tab starts with last month\'s MFG + SKU r
 });
 
 test('Rule 9.3 costs and missing COGS', () => {
+  // Rule 8.1b: on-hand cost = COGS Total / Unit − the mailer the BOM says is only added when shipped (41001 = $0.32).
   const r = findRow(T.variance, 'ADS', '80090');
-  close(val(T.variance, r, 'K'), 6.90);
-  close(val(T.variance, r, 'N'), 170 * 6.9 - 195 * 6.9);
+  close(val(T.variance, r, 'K'), 6.90 - 0.32);
+  close(val(T.variance, r, 'N'), 170 * 6.58 - 195 * 6.58);
+  close(val(T.variance, findRow(T.variance, 'ADS', '80030'), 'K'), 2.96 - 0.32);
+  close(val(T.variance, findRow(T.variance, 'ADS', '10030'), 'K'), 7.19);   // no mailer line on the BOM: COGS as typed
+  close(val(T.variance, findRow(T.variance, 'ADS', '41001'), 'K'), 0.32);   // the loose mailers themselves
   const a8 = findRow(T.variance, 'Amazon', 'A80004');
   assert.equal(val(T.variance, a8, 'K'), 'NO COST');
   assert.equal(val(T.variance, a8, 'M'), 'NO COST');
@@ -130,17 +134,26 @@ test('Rule 9.1: one flat table (no block headings or subtotal rows) and a Total 
 });
 
 test('Rule 10: valuation totals box', () => {
-  const ending = 5 * 7.19 + 90 * 2.96 + 170 * 6.90 + 28 * 0.45 + 48 * 2.10 + 35 * 0.64 + 15 * 2.87 + 115 * 2.87 + 4 * 2.10 + 16 * 0.32;
+  // 80030 and 80090 are valued without their mailer (Rule 8.1b): 2.96 − 0.32 and 6.90 − 0.32.
+  const ending = 5 * 7.19 + 90 * 2.64 + 170 * 6.58 + 28 * 0.45 + 48 * 2.10 + 35 * 0.64 + 15 * 2.87 + 115 * 2.87 + 4 * 2.10 + 16 * 0.32;
   const raw = 300 * 197.96 + 120 * 197.96;
   const vals = sheet(T.valuation).values;
   assert.ok(!vals.some((r) => /^(Subtotal|▼)/.test(String(r[0]))), 'no block headings or subtotal rows');
-  assert.deepEqual(plain([vals[3][11], vals[4][11], vals[5][11]]), ['Ending Inventory', 'Raw Material - Component', 'TOTAL INVENTORY VALUE']);
-  close(val(T.valuation, 4, 'M'), ending);
-  close(val(T.valuation, 5, 'M'), raw);
-  close(val(T.valuation, 6, 'M'), ending + raw);
+  assert.deepEqual(plain(vals[3].slice(0, 11)), ['Location', 'SKU', 'Description', 'Categorization', 'Available Inventory', 'Base Cost',
+    'Freight In', 'Tariff', 'Less: Mailer (added when shipped)', 'Total / Unit', 'Total Inventory Value']);
+  assert.deepEqual(plain([vals[3][12], vals[4][12], vals[5][12]]), ['Ending Inventory', 'Raw Material - Component', 'TOTAL INVENTORY VALUE']);
+  close(val(T.valuation, 4, 'N'), ending);
+  close(val(T.valuation, 5, 'N'), raw);
+  close(val(T.valuation, 6, 'N'), ending + raw);
   const a8 = findRow(T.valuation, 'Amazon', 'A80004');
   assert.equal(val(T.valuation, a8, 'E'), 25);
-  assert.equal(val(T.valuation, a8, 'J'), 'NO COST');
+  assert.equal(val(T.valuation, a8, 'K'), 'NO COST');
+  // Rule 10.1: the mailer column explains the difference from COGS: Base + Freight + Tariff − Mailer = Total / Unit.
+  const p = findRow(T.valuation, 'ADS', '80030');
+  assert.deepEqual(['F', 'G', 'H', 'I', 'J'].map((c) => Math.round(val(T.valuation, p, c) * 100) / 100), [2.60, 0.01, 0.35, 0.32, 2.64]);
+  close(val(T.valuation, p, 'K'), 90 * 2.64);
+  assert.equal(val(T.valuation, findRow(T.valuation, 'ADS', '10030'), 'I'), 0, 'a kit has no mailer taken out');
+  assert.equal(val(T.valuation, findRow(T.valuation, 'VitaQuest', '70003'), 'I'), 0, 'MFG rows use the same formula');
 });
 
 test('Rule 11: outbound units by channel (order-level tags, manualorder_log channels incl. Samples, Amazon)', () => {
@@ -175,6 +188,7 @@ test('Rule 12: checks flag what is wrong and pass what is right', () => {
   assert.match(result('Shopify lines with no SKU (not counted anywhere)'), /^FLAG: 1 /);
   assert.equal(result('Rows where Expected Ending Inventory is negative'), 'OK');
   assert.equal(result('Inventory Valuation total = sum of every row'), 'OK');
+  assert.equal(result('Inventory Valuation total = Variance Overview Total Actual Cost'), 'OK');
   assert.equal(result('MFG Counts filled in'), 'OK');
   assert.equal(result('MFG Counts fits the MFG section'), 'OK');
   const map = rows.find((x) => x[1] === 'AMZ SKU Map entries added this run');
@@ -406,7 +420,7 @@ test('Rule 6.2: COGS in the new layout (no Trim); a SKU stored as a number still
   const w = workbookFromModels(b.sheets);
   const v = b.sheets.find((s) => s.name === b.tabs.variance).values;
   const r = v.findIndex((x) => x[0] === 'ADS' && x[1] === '80090') + 1;
-  close(w.value(b.tabs.variance, r, 11), 6.90);
+  close(w.value(b.tabs.variance, r, 11), 6.90 - 0.32); // on-hand cost: COGS less the mailer (Rule 8.1b)
   const a8 = v.findIndex((x) => x[0] === 'Amazon' && x[1] === 'A80004') + 1;
   assert.equal(w.value(b.tabs.variance, a8, 11), 'NO COST', 'a SKU with letters and no COGS row is still NO COST');
   assert.ok(!b.sheets.find((s) => s.name === b.tabs.checks).values.find((x) => x[1] === 'SKUs with no COGS cost')[3].includes('80090,'),
@@ -435,7 +449,12 @@ test('Rule 6.2: with no COGS tab yet, a blank one is created — every SKU, cost
   const i = cogs.values.findIndex((x) => x[0] === '80090');
   const typed = cogs.values.map((row, k) => (k === i ? [row[0], row[1], 6.5, 0.4, '', row[5]] : row));
   w = workbookFromModels(b.sheets.map((s) => (s === cogs ? Object.assign({}, s, { values: typed }) : s)));
-  close(w.value(b.tabs.variance, r, 11), 6.9);
+  // Rule 8.1b: 80090's on-hand cost needs the mailer's cost too (its BOM lists a mailer added when shipped) — loud until typed.
+  assert.equal(w.value(b.tabs.variance, r, 11), 'NO COST');
+  const j = cogs.values.findIndex((x) => x[0] === '41001');
+  const typed2 = typed.map((row, k) => (k === j ? [row[0], row[1], 0.32, '', '', row[5]] : row));
+  w = workbookFromModels(b.sheets.map((s) => (s === cogs ? Object.assign({}, s, { values: typed2 }) : s)));
+  close(w.value(b.tabs.variance, r, 11), 6.9 - 0.32);
 });
 
 test('Rule 11.2a: a bundle with no COGS cost is costed from its parts; its own COGS cost wins when above $0', () => {
@@ -453,11 +472,12 @@ test('Rule 11.2a: a bundle with no COGS cost is costed from its parts; its own C
   const w = workbookFromModels(b.sheets);
   const ob = b.sheets.find((s) => s.name === b.tabs.outbound).values;
   const cost = (sku) => w.value(b.tabs.outbound, ob.findIndex((x) => x[0] === sku) + 1, 3);
-  close(cost('80030,51002'), 2.96 + 0.45);         // parts: 80030 + 51002
-  close(cost('80030,80030,51002'), 2 * 2.96 + 0.45);
-  close(cost('80090,80090'), 2 * 6.90);            // own $0 → parts
+  // Rule 8.1b: parts at on-hand cost (80030 = 2.96 − 0.32 mailer), then ONE mailer per bundle unit.
+  close(cost('80030,51002'), 2.64 + 0.45 + 0.32);  // parts: 80030 + 51002 + one mailer (= 2.96 + 0.45, as before)
+  close(cost('80030,80030,51002'), 2 * 2.64 + 0.45 + 0.32); // two pouches, still one mailer
+  close(cost('80090,80090'), 2 * 6.58 + 0.32);     // own $0 → parts, one mailer
   assert.equal(cost('80030,A80004'), 'NO COST');   // a part has no cost
-  close(cost('80030'), 2.96);                       // plain SKUs unchanged
+  close(cost('80030'), 2.96);                       // a pouch sold alone: on-hand 2.64 + mailer 0.32 = its COGS cost
   // Checks lists only the bundle whose part is missing.
   const detail = b.sheets.find((s) => s.name === b.tabs.checks).values.find((x) => x[1] === 'SKUs with no COGS cost')[3];
   assert.match(detail, /80030,A80004/);
@@ -467,6 +487,75 @@ test('Rule 11.2a: a bundle with no COGS cost is costed from its parts; its own C
   inputs2.cogs = { header: inputs2.cogs.header, rows: inputs2.cogs.rows.map((r) => (r[0] === '80030,51002' ? [r[0], '', 5, 0, 0, 5] : r)) };
   const b2 = L.buildWorkbookModel_(inputs2), w2 = workbookFromModels(b2.sheets);
   const ob2 = b2.sheets.find((s) => s.name === b2.tabs.outbound).values;
-  close(w2.value(b2.tabs.outbound, ob2.findIndex((x) => x[0] === '80030,51002') + 1, 3), 5);
+  // A typed bundle cost is what is in the box (no BOM mailer line), so one mailer is added on top.
+  close(w2.value(b2.tabs.outbound, ob2.findIndex((x) => x[0] === '80030,51002') + 1, 3), 5 + 0.32);
+  // The sample month's own 80090,80090 cost has a BOM mailer line: 13.80 − 0.32 + 0.32 = 13.80 (see Rule 11 test).
   assert.doesNotThrow(() => L.assertExcelSafe_(b.sheets));
+});
+
+test('Rule 8.1b / 6.1: the BOM tab marks only the pouch → mailer lines as "added when shipped" (a kit\'s mailer is inside the kit)', () => {
+  const bom = sheet(T.bom).values;
+  assert.equal(bom[0][5], 'Mailer added when shipped');
+  const flag = (p, c) => bom.find((r) => r[0] === p && r[2] === c)[5];
+  assert.deepEqual(['80030', '80090', '80090,80090'].map((p) => flag(p, '41001')), ['Yes', 'Yes', 'Yes']);
+  assert.equal(flag('X4', '41001'), '', 'a kit that contains a mailer keeps it in its cost');
+  assert.equal(flag('10030', '80030'), '', 'other lines are not marked');
+});
+
+test('Rule 8.1b: Outbound Avg Cost = on-hand cost + one mailer, charged on Shopify units only (not manualorder_log, not Amazon)', () => {
+  const { sampleRaw, csv } = require('./fixtures/sampleMonth');
+  const raw = sampleRaw(2026, 8), m = L.monthInfo_(2026, 8);
+  raw.manualLog.push(['146', 'Samples', '80030', '2', '', '9/6/2026']);               // 2 pouches sent as samples: no mailer
+  const last = raw.ledger[raw.ledger.length - 1];
+  const amz = last.slice(); amz[1] = 'B7'; amz[2] = 'B7'; amz[3] = '80030'; amz[8] = '1'; amz[9] = '-1'; amz[18] = '0'; // Amazon sold 1 pouch
+  raw.ledger.push(amz);
+  const b = L.buildWorkbookModel_(sampleInputs(L, {
+    manualLog: L.parseOpsLog_(raw.manualLog, 'manual', m),
+    ledger: L.toTable_(L.parseCsv_(csv(raw.ledger)), 'ledger')
+  }));
+  const w = workbookFromModels(b.sheets);
+  const ob = b.sheets.find((s) => s.name === b.tabs.outbound).values;
+  const r = ob.findIndex((x) => x[0] === '80030') + 1;
+  const v = (col) => w.value(b.tabs.outbound, r, col.charCodeAt(0) - 64);
+  close(v('C'), 2.96);                    // as shipped on Shopify: 2.64 on hand + 0.32 mailer
+  assert.deepEqual(['D', 'H', 'L', 'N', 'P'].map(v), [0, 1, 2, 1, 4]); // DTC, CX (Shopify replacement), Samples (log), Amazon, All
+  close(v('I'), 1 * 2.96);                // Shopify unit: with the mailer
+  close(v('M'), 2 * 2.64);                // manualorder_log units: no mailer
+  close(v('O'), 1 * 2.64);                // Amazon unit: no mailer
+  close(v('Q'), 2.96 + 2 * 2.64 + 2.64);
+  // Units side unchanged: the mailer rule still counts only Shopify units (5), the samples use none.
+  const vo = b.sheets.find((s) => s.name === b.tabs.variance).values;
+  const m41 = vo.findIndex((x) => x[0] === 'ADS' && x[1] === '41001') + 1;
+  assert.equal(w.value(b.tabs.variance, m41, 7), 5);
+  close(w.value(b.tabs.variance, vo.findIndex((x) => x[0] === 'Amazon' && x[1] === '80030') + 1, 11), 2.64);
+  assert.doesNotThrow(() => L.assertExcelSafe_(b.sheets));
+});
+
+test('Rule 8.1b / 12: Checks lists the mailers taken out of on-hand cost; a typed bundle cost with no BOM mailer line is CHECK', () => {
+  const rows = sheet(T.checks).values;
+  const i = rows.findIndex((x) => x[1] === 'Mailer: out of on-hand cost, into Outbound cost');
+  assert.match(rows[i][3], /80030 → 1 × 41001; 80090 → 1 × 41001; 80090,80090 → 1 × 41001/);
+  assert.ok(!/X4/.test(rows[i][3]), 'kit mailers are not listed');
+  // The sample COGS has a typed 80030,51002 cost and no BOM mailer line for it → CHECK naming it.
+  assert.equal(wb.value(T.checks, i + 1, 3), 'CHECK: 1 SKU(s) with no mailer line on the BOM');
+  assert.match(rows[i][3], /No mailer line on the BOM for: 80030,51002/);
+  // Without that typed bundle cost: INFO with the live count of mailers on Shopify orders (5 counted).
+  const inputs = sampleInputs(L);
+  inputs.cogs = { header: inputs.cogs.header, rows: inputs.cogs.rows.filter((r) => r[0] !== '80030,51002') };
+  const b = L.buildWorkbookModel_(inputs), w = workbookFromModels(b.sheets);
+  const rows2 = b.sheets.find((s) => s.name === b.tabs.checks).values;
+  const j = rows2.findIndex((x) => x[1] === 'Mailer: out of on-hand cost, into Outbound cost') + 1;
+  assert.equal(w.value(b.tabs.checks, j, 3), 'INFO: 5 mailers on Shopify orders, costed on Outbound Summary');
+});
+
+test('Rule 12.7a: a row copied twice on Inventory Valuation is caught (Variance Overview total no longer matches)', () => {
+  const iv = sheet(T.valuation);
+  const p = findRow(T.valuation, 'ADS', '80030');
+  // Copy the row's cells to the bottom unchanged — exactly what a hand-copied row does (it still points at the same figures).
+  const copied = iv.values.concat([iv.values[p - 1].slice()]);
+  const w = workbookFromModels(built.sheets.map((s) => (s === iv ? Object.assign({}, s, { values: copied }) : s)));
+  const rows = sheet(T.checks).values;
+  const res = (label) => w.value(T.checks, rows.findIndex((x) => x[1] === label) + 1, 3);
+  assert.match(res('Inventory Valuation total = Variance Overview Total Actual Cost'), /^FLAG: the two totals differ/);
+  assert.equal(res('Inventory Valuation total = sum of every row'), 'OK', 'the old check could not see it');
 });
