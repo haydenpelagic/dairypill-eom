@@ -944,6 +944,8 @@ function parseOpsLog_(values, kind, m) {
     }
     if (ship < m.firstSerial || ship > m.endSerial) { out.otherMonths++; continue; }
     var sku = cleanSku_(r[ix.sku]);
+    // Rule 5.6 / 6.3: amz_log is typed with Amazon's SKUs; ADS stocks them under ours (A80002 → A80004, " - TEMP SKU" dropped).
+    if (kind === 'amz' && sku) sku = mapAmazonSku_(sku).sku;
     if (!sku) throw new Error('No SKU ' + where + '.');
     if (typeof r[ix.sku] === 'number' && sku.length > 6) {
       throw new Error('SKU "' + sku + '" ' + where + ' looks like a bundle that Google Sheets turned into a number (the commas are gone). ' +

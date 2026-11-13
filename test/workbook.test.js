@@ -574,6 +574,10 @@ test('Rule 5.6: amz_log as it is laid out in the Ops Hub — header in row 2, li
   // Error messages name the real sheet row (row 3 here, under the summary row and the header row).
   const bad = v.slice(0, 2).concat([['A0030', 'five', '1', 'X', '', '10/2/2026']]);
   assert.throws(() => L.parseOpsLog_(bad, 'amz', m), /amz_log", row 3 \(Quantity\)/);
+  // Amazon's SKU names are mapped to ours like the ledger's (Rule 6.3): A80002 is ADS's A80004.
+  const renamed = L.parseOpsLog_(v.slice(0, 2).concat([['A80002', 240, '0000173', 'TOL3', '', '10/30/2026'],
+    ['A0030 - TEMP SKU', 5, '0000174', 'X', '', '10/30/2026']]), 'amz', m);
+  assert.deepEqual(plain(renamed.rows.map((r) => r[2])), ['A80004', 'A0030']);
   // Without a Ship Date column the run stops and says which column is missing.
   assert.throws(() => L.parseOpsLog_(v.map((r) => r.slice(0, 5)), 'amz', m), /missing the column "Ship Date"/);
 });
