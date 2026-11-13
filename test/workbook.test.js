@@ -306,7 +306,7 @@ test('Rule 5.6: Ops Hub logs — only rows shipped inside the month count; blank
     ['141', 'Marketing', '50001', 2, '', L.parseMDY_('9/2/2026')],
     ['144', 'Samples', '50001', 1, '2026-10-01T10:00:00+00:00', L.parseMDY_('9/5/2026')]]);
   assert.deepEqual(plain(sheet(T.amzLog).values), [
-    ['ADS Order Number', 'Amazon Number', 'SKU', 'Quantity', 'Order Date', 'Ship Date'],
+    ['ADS Order Number', 'Amazon Store Number', 'SKU', 'Quantity', 'Order Date Date Labels are Received', 'Ship Date'],
     ['142', 'FBA15X', 'A0030', 15, '', L.parseMDY_('9/17/2026')]]);
   assert.equal(val(T.variance, findRow(T.variance, 'ADS', '50001'), 'G'), 3, 'other-month and unshipped rows are not counted');
   // amz_log only reduces ADS: Amazon's side still comes from the ledger (Receipts 15 = what arrived).
@@ -322,7 +322,7 @@ test('Rule 5.6: Ops Hub logs — only rows shipped inside the month count; blank
 test('Rule 5.6: Ops Hub log rows that would make a number wrong stop the run', () => {
   const m = L.monthInfo_(2026, 8);
   const H = ['ADS Order Number', 'Channel', 'SKU', 'Quantity', 'Order Date', 'Ship Date'];
-  const A = ['ADS Order Number', 'Amazon Number', 'SKU', 'Quantity', 'Order Date', 'Ship Date'];
+  const A = ['ADS Order Number', 'Amazon Store Number', 'SKU', 'Quantity', 'Order Date Date Labels are Received', 'Ship Date'];
   const one = (row, head) => () => L.parseOpsLog_([head || H, row], head === A ? 'amz' : 'manual', m);
   assert.throws(one(['1', 'Amazon', 'A0030', 5, '', '9/3/2026']), /units sent from ADS to Amazon belong in Ops Hub "amz_log"/);
   assert.throws(one(['1', 'Wholesale', '50001', 5, '', '9/3/2026']), /Channel "Wholesale" .* is not one of: DTC, Marketing, CX, TikTok, Samples/);
@@ -558,4 +558,22 @@ test('Rule 12.7a: a row copied twice on Inventory Valuation is caught (Variance 
   const res = (label) => w.value(T.checks, rows.findIndex((x) => x[1] === label) + 1, 3);
   assert.match(res('Inventory Valuation total = Variance Overview Total Actual Cost'), /^FLAG: the two totals differ/);
   assert.equal(res('Inventory Valuation total = sum of every row'), 'OK', 'the old check could not see it');
+});
+
+test('Rule 5.6: amz_log as it is laid out in the Ops Hub — header in row 2, line breaks in names, SKU first, Ship Date in F', () => {
+  const m = L.monthInfo_(2026, 9);
+  const v = [['', '', '', '', '', ''],
+    ['SKU', 'Quantity', 'ADS Order \nNumber', 'Amazon Store \nNumber', 'Order Date\nDate Labels are Received', 'Ship Date'],
+    ['A0030', 480, '0000164', 'MCC1', 46293, '10/1/2026'],     // shipped in October: counted
+    ['A0030', 560, '0000173', 'TOL3', 46322, ''],              // no Ship Date yet: not counted
+    ['A0090', 80, '0000178', 'RDU2', 46329, '11/4/2026']];     // shipped in November: not October
+  const out = L.parseOpsLog_(v, 'amz', m);
+  assert.deepEqual(plain(out.rows), [['0000164', 'MCC1', 'A0030', 480, '46293', L.parseMDY_('10/1/2026')]]);
+  assert.equal(out.notShipped, 1);
+  assert.equal(out.otherMonths, 1);
+  // Error messages name the real sheet row (row 3 here, under the summary row and the header row).
+  const bad = v.slice(0, 2).concat([['A0030', 'five', '1', 'X', '', '10/2/2026']]);
+  assert.throws(() => L.parseOpsLog_(bad, 'amz', m), /amz_log", row 3 \(Quantity\)/);
+  // Without a Ship Date column the run stops and says which column is missing.
+  assert.throws(() => L.parseOpsLog_(v.map((r) => r.slice(0, 5)), 'amz', m), /missing the column "Ship Date"/);
 });

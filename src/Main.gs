@@ -567,7 +567,7 @@ function renameEntry_(entry, base) {
   if (name !== target) entry.file.setName(target);
 }
 
-/** Rule 5.6: an Ops Hub shipment log's columns (header in row 1). */
+/** Rule 5.6: an Ops Hub shipment log's columns (header in one of the top rows; columns found by name). */
 function readOpsLogValues_(hub, cfg) {
   var sheet = sheetByName_(hub, cfg.sheetName);
   if (!sheet) throw new Error('Ops Hub has no tab named "' + cfg.sheetName + '".');

@@ -41,8 +41,11 @@ var CONFIG = {
     manualLog: { sheetName: 'manualorder_log', columns: 'A:F',
       headers: { order: 'ADS Order Number', channel: 'Channel', sku: 'SKU', qty: 'Quantity', orderDate: 'Order Date', shipDate: 'Ship Date' } },
     // Units shipped out of ADS to Amazon. They only reduce ADS (never a sale; Amazon's side is the ledger).
+    // Layout since 2026-11 (owner): a summary row above, headers in row 2, columns SKU | Quantity | ADS Order Number |
+    // Amazon Store Number | Order Date (Date Labels are Received) | Ship Date (F, added 2026-11-13). Found by name.
     amzLog: { sheetName: 'amz_log', columns: 'A:F',
-      headers: { order: 'ADS Order Number', amazon: 'Amazon Number', sku: 'SKU', qty: 'Quantity', orderDate: 'Order Date', shipDate: 'Ship Date' } }
+      headers: { order: 'ADS Order Number', amazon: 'Amazon Store Number', sku: 'SKU', qty: 'Quantity',
+                 orderDate: 'Order Date Date Labels are Received', shipDate: 'Ship Date' } }
   },
 
   // ---- Rule 15: writeOpsHub() copies the finished month into these Ops Hub 2.0 tabs ----

@@ -64,7 +64,8 @@ const rawSep = sampleRaw(2026, 8);
 putMonthFiles(sep, rawSep, { boot: true });
 // Ops Hub: BOM + the two shipment logs. The logs hold several months' rows (Rule 5.6: month = Ship Date).
 const logMonths = [[2026, 8], [2026, 9], [2027, 2], [2027, 3]].map(([y, mi]) => sampleRaw(y, mi));
-const stackLog = (k) => [rawSep[k][0]].concat(...logMonths.map((r) => r[k].slice(1)));
+const head = (k) => (k === 'amzLog' ? 2 : 1); // amz_log has a summary row above its header row
+const stackLog = (k) => rawSep[k].slice(0, head(k)).concat(...logMonths.map((r) => r[k].slice(head(k))));
 gas.spreadsheetWithId(ctx.CONFIG.BOM_SOURCE.spreadsheetId, 'DairyPill Ops Hub 2.0', null, {
   Other: [['x']],
   bom: rawSep.bomValues.map((r) => ['', '', '', ''].concat(r)), // the real tab is lower-case "bom"; data in E:I

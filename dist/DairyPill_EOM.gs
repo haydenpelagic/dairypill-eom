@@ -45,8 +45,11 @@ var CONFIG = {
     manualLog: { sheetName: 'manualorder_log', columns: 'A:F',
       headers: { order: 'ADS Order Number', channel: 'Channel', sku: 'SKU', qty: 'Quantity', orderDate: 'Order Date', shipDate: 'Ship Date' } },
     // Units shipped out of ADS to Amazon. They only reduce ADS (never a sale; Amazon's side is the ledger).
+    // Layout since 2026-11 (owner): a summary row above, headers in row 2, columns SKU | Quantity | ADS Order Number |
+    // Amazon Store Number | Order Date (Date Labels are Received) | Ship Date (F, added 2026-11-13). Found by name.
     amzLog: { sheetName: 'amz_log', columns: 'A:F',
-      headers: { order: 'ADS Order Number', amazon: 'Amazon Number', sku: 'SKU', qty: 'Quantity', orderDate: 'Order Date', shipDate: 'Ship Date' } }
+      headers: { order: 'ADS Order Number', amazon: 'Amazon Store Number', sku: 'SKU', qty: 'Quantity',
+                 orderDate: 'Order Date Date Labels are Received', shipDate: 'Ship Date' } }
   },
 
   // ---- Rule 15: writeOpsHub() copies the finished month into these Ops Hub 2.0 tabs ----
@@ -738,7 +741,7 @@ function renameEntry_(entry, base) {
   if (name !== target) entry.file.setName(target);
 }
 
-/** Rule 5.6: an Ops Hub shipment log's columns (header in row 1). */
+/** Rule 5.6: an Ops Hub shipment log's columns (header in one of the top rows; columns found by name). */
 function readOpsLogValues_(hub, cfg) {
   var sheet = sheetByName_(hub, cfg.sheetName);
   if (!sheet) throw new Error('Ops Hub has no tab named "' + cfg.sheetName + '".');
@@ -833,7 +836,8 @@ function colLetter_(n) {
 }
 
 function normHeader_(h) {
-  return String(h === null || h === undefined ? '' : h).replace(/^﻿/, '').trim().toLowerCase();
+  // Line breaks and repeated spaces inside a header don't matter ("ADS Order \nNumber" = "ADS Order Number").
+  return String(h === null || h === undefined ? '' : h).replace(/^﻿/, '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 /** Index of a header (case-insensitive), or -1. */
@@ -1691,7 +1695,17 @@ function parseOpsLog_(values, kind, m) {
   var H = cfg.headers;
   var label = 'Ops Hub tab "' + cfg.sheetName + '"';
   if (!values || !values.length) throw new Error(label + ' is empty — it needs its header row (' + cfg.columns + ').');
-  var header = values[0].map(function (h) { return String(h === null || h === undefined ? '' : h).trim(); });
+  // The header row is the first of the top 5 rows that has the SKU and Ship Date columns (amz_log has a summary row above it).
+  // Failing that, the first row with a SKU column, so the error names the column that is really missing (e.g. Ship Date).
+  var top = values.slice(0, 5);
+  var hr = [function (r) { return headerIndex_(r, H.sku) >= 0 && headerIndex_(r, H.shipDate) >= 0; },
+    function (r) { return headerIndex_(r, H.sku) >= 0; }].reduce(function (found, test) {
+    if (found >= 0) return found;
+    for (var h = 0; h < top.length; h++) if (test(top[h])) return h;
+    return -1;
+  }, -1);
+  if (hr < 0) hr = 0;
+  var header = values[hr].map(function (x) { return String(x === null || x === undefined ? '' : x).trim(); });
   var second = kind === 'manual' ? H.channel : H.amazon;
   var ix = {};
   [['order', H.order], ['second', second], ['sku', H.sku], ['qty', H.qty], ['orderDate', H.orderDate], ['shipDate', H.shipDate]].forEach(function (p) {
@@ -1700,7 +1714,7 @@ function parseOpsLog_(values, kind, m) {
   var allowed = CONFIG.OUTBOUND_CHANNELS;
   var blank = function (v) { return v === '' || v === null || v === undefined || (typeof v === 'string' && v.trim() === ''); };
   var out = { rows: [], notShipped: 0, otherMonths: 0 };
-  for (var i = 1; i < values.length; i++) {
+  for (var i = hr + 1; i < values.length; i++) {
     var r = values[i];
     var where = 'in ' + label + ', row ' + (i + 1);
     if (blank(r[ix.sku]) && blank(r[ix.qty]) && blank(r[ix.shipDate])) continue;

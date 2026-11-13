@@ -84,9 +84,12 @@ function sampleRaw(year, monthIndex) {
     ['144', 'samples', '50001', '1', '2026-10-01T10:00:00+00:00', day(5)],   // channel matched without caring about capitals
     ['140', 'Marketing', '50001', '99', '', '1/15/2020'],                     // shipped in another month: ignored
     ['145', 'CX', '50001', '7', '', '']];                                     // no Ship Date = not shipped: not counted
-  const amzLog = [['ADS Order Number', 'Amazon Number', 'SKU', 'Quantity', 'Order Date', 'Ship Date'],
-    ['142', 'FBA15X', 'A0030', '15', '', day(17)],
-    ['143', 'FBA16Y', 'A0030', '50', '', '2/1/2020']];                        // another month: ignored
+  // amz_log as laid out in the Ops Hub since 2026-11: a summary row on top, headers in row 2 (with line breaks),
+  // SKU first, Ship Date in F (Rule 5.6). Columns are found by name.
+  const amzLog = [['', '', '', '', '', ''],
+    ['SKU', 'Quantity', 'ADS Order \nNumber', 'Amazon Store \nNumber', 'Order Date\nDate Labels are Received', 'Ship Date'],
+    ['A0030', '15', '142', 'FBA15X', '', day(17)],
+    ['A0030', '50', '143', 'FBA16Y', '', '2/1/2020']];                        // another month: ignored
   const bomValues = [
     ['BOM', '', '', '', ''],
     ['Parent SKU', 'Parent Desc', 'Child SKU', 'Child Desc', 'Qty'],
