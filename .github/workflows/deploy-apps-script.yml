@@ -1,20 +1,11 @@
-# Uploads the script to Google Apps Script on every push to main that changes it, but ONLY if all tests pass.
-# One-time setup: SETUP.md section C (repository secret CLASPRC_JSON).
+# Uploads the script to Google Apps Script on EVERY push to main, but ONLY if all tests pass (owner, 2026-11-13:
+# "push to git, git pushes to the script, always"). Uploading unchanged code is harmless, so there is no file filter.
+# One-time setup: SETUP.md section 2 (repository secret CLASPRC_JSON).
 name: Deploy to Apps Script
 
 on:
   push:
     branches: [main]   # only main goes live; other branches never upload
-    paths:
-      - 'src/**'
-      - 'dist/**'
-      - 'appsscript.json'
-      - '.clasp.json'
-      - 'tools/bundle.js'
-      - 'tools/clasprc.js'
-      - 'test/**'
-      - 'package.json'
-      - '.github/workflows/deploy-apps-script.yml'
   workflow_dispatch: {}
 
 # One deploy at a time; a newer push waits for the one in progress.
