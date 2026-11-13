@@ -25,7 +25,11 @@ The code is **not pasted by hand**. Every time Claude Code pushes a change to Gi
 Good to know:
 - The upload **replaces everything** in that Apps Script project. Don't edit code in the Apps Script editor — it's overwritten on the next upload. Ask Claude Code instead.
 - Only the **main** branch goes live (once its tests pass). Change the script from **one Claude session at a time**.
-- If an upload goes red with **invalid_grant**, the saved sign-in expired: redo steps 3–5 above (in step 5, click the pencil on the existing `CLASPRC_JSON` secret and paste over it), then **Re-run jobs** on the red run.
+- Either version of `clasp login` works (clasp 2 or clasp 3): the deploy converts a clasp 3 sign-in for its uploader.
+- In step 4, paste into GitHub **straight after** `pbcopy` — copying anything else in between replaces the sign-in on your clipboard.
+- If an upload goes red, the step **Load the Google sign-in** says why in plain English:
+  - **"is not a Google sign-in file"** or **"is empty"**: the secret holds something else. Redo steps 4–5 (click the pencil on the existing `CLASPRC_JSON` secret and paste over it), then **Re-run jobs** on the red run.
+  - **invalid_grant** (in the Upload step): the saved sign-in expired. Redo steps 3–5, then **Re-run jobs**.
 - To cut GitHub's access: Google Account → Security → Third-party connections → remove **clasp**, then delete the secret.
 - Backup (only on your Mac, with clasp signed in): `npm run deploy` runs the tests, rebuilds and uploads.
 

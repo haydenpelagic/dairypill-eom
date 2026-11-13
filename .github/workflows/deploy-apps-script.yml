@@ -11,6 +11,7 @@ on:
       - 'appsscript.json'
       - '.clasp.json'
       - 'tools/bundle.js'
+      - 'tools/clasprc.js'
       - 'test/**'
       - 'package.json'
       - '.github/workflows/deploy-apps-script.yml'
@@ -42,15 +43,12 @@ jobs:
             exit 1
           fi
 
+      # Checks the secret is a sign-in file (from clasp 2 or clasp 3 login) and writes it where the uploader reads it.
+      # A bad secret stops here with a plain-English reason; the secret is never printed.
       - name: Load the Google sign-in for clasp
         env:
           CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
-        run: |
-          if [ -z "$CLASPRC_JSON" ]; then
-            echo "::error::The CLASPRC_JSON secret is not set, so nothing was uploaded to Apps Script. See SETUP.md section C."
-            exit 1
-          fi
-          printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+        run: node tools/clasprc.js
 
       - name: Upload to Apps Script
         run: npx --yes @google/clasp@2.4.2 push --force
