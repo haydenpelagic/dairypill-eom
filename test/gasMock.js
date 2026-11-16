@@ -99,6 +99,7 @@ class MockRange {
     return this;
   }
   each(fn) { for (let i = 0; i < this.nr; i++) for (let j = 0; j < this.nc; j++) fn(this.r + i, this.c + j); }
+  clearContent() { this.each((r, c) => { const row = this.sheet.cells[r - 1]; if (row) row[c - 1] = ''; }); this.sheet.ss.dirty = true; return this; }
   setFontWeight() { return this; }
   setFontSize() { return this; }
   setBackground() { return this; }
@@ -140,6 +141,7 @@ class MockSheet {
     return new MockRange(this, a, b, c || 1, d || 1);
   }
   getMaxRows() { return this.maxRows; }
+  getLastRow() { return this.lastRow(); }
   getLastColumn() { return this.lastCol(); }
   getMaxColumns() { return this.maxCols; }
   insertRowsAfter(_, n) { this.maxRows += n; }
@@ -194,12 +196,34 @@ class MockSpreadsheet {
   }
 }
 
+/**
+ * A stand-in for SpreadsheetApp.getUi(): `answers` are what the person types in each prompt (null = Cancel);
+ * every alert / pop-up shown is recorded in `shown`.
+ */
+function fakeUi() {
+  const ui = {
+    answers: [], shown: [],
+    ButtonSet: { OK: 'OK', OK_CANCEL: 'OK_CANCEL' }, Button: { OK: 'ok', CANCEL: 'cancel' },
+    prompt(title, text) {
+      const a = ui.answers.length ? ui.answers.shift() : '';
+      ui.shown.push({ kind: 'prompt', title, text });
+      return { getSelectedButton: () => (a === null ? ui.Button.CANCEL : ui.Button.OK), getResponseText: () => (a === null ? '' : a) };
+    },
+    alert(title, text) { ui.shown.push({ kind: 'alert', title, text }); },
+    showModalDialog(html, title) { ui.shown.push({ kind: 'dialog', title, text: html.content }); },
+    createMenu(name) { const m = { name, items: [], addItem(l, fn) { m.items.push([l, fn]); return m; }, addToUi() { ui.menus.push(m); } }; return m; },
+    menus: []
+  };
+  return ui;
+}
+
 function createGas(opts) {
   const drive = { files: new Map(), folders: new Map() };
+  const ui = fakeUi();
   const root = new MockFolder(drive, 'My Drive', null);
   const ruleBuilder = () => { const b = { whenTextStartsWith: () => b, whenTextEqualTo: () => b, setBackground: () => b, setRanges: () => b, build: () => ({}) }; return b; };
   const sandbox = {
-    console: { log: () => {} },
+    console: { log: () => {}, error: () => {} },
     MimeType: { GOOGLE_SHEETS: 'application/vnd.google-apps.spreadsheet', MICROSOFT_EXCEL: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
     DriveApp: {
       getFolderById: (id) => { const f = drive.folders.get(id); if (!f) throw new Error('No folder ' + id); return f; },
@@ -211,13 +235,15 @@ function createGas(opts) {
       openById: (id) => { const f = drive.files.get(id); if (!f || !f.ss) throw new Error('No spreadsheet ' + id); return f.ss; },
       flush: () => {},
       newConditionalFormatRule: ruleBuilder,
-      BorderStyle: { SOLID: 'solid' }
+      BorderStyle: { SOLID: 'solid' },
+      getUi: () => ui
     },
+    HtmlService: { createHtmlOutput: (content) => { const h = { content, setWidth: () => h, setHeight: () => h }; return h; } },
     Utilities: { formatDate: (d, tz, fmt) => (fmt === 'yyyy-MM-dd' ? (opts && opts.today) || '2026-10-05' : ((opts && opts.today) || '2026-10-05') + ' 09:00') },
     Session: { getScriptTimeZone: () => 'America/New_York', getActiveUser: () => ({ getEmail: () => 'tester@example.com' }) }
   };
   return {
-    drive, root, sandbox,
+    drive, root, sandbox, ui,
     /** A Google Sheet with a given id (used for the Ops Hub BOM and the first-run workbook). */
     spreadsheetWithId: (id, name, folder, tabs) => {
       const ss = new MockSpreadsheet(drive, name, folder || root);

@@ -26,7 +26,12 @@ test('Rule 2: files are recognized by their columns', () => {
 test('Rule 3: tab names are dated, ≤ 31 characters, and Excel-safe', () => {
   const m = L.monthInfo_(2026, 8);
   const t = L.tabNames_(m);
-  assert.equal(t.adsStart, 'ADS Starting Balance 08.31.2026');
+  assert.equal(t.amzStart, 'AMZ Starting Balance 08.31.2026');
+  assert.equal(t.hubInventory, 'Ops Hub Inventory 09.30.2026');
+  assert.equal(t.hubSellThru, 'Ops Hub Sell Thru 09.30.2026');
+  assert.equal(t.hubWoLog, 'Ops Hub WO Log 09.30.2026');
+  assert.equal(t.mfgReceipts, 'MFG Receipts 09.30.2026');
+  assert.deepEqual(Array.from(L.tabOrder_(t)).sort(), Object.values(t).sort(), 'every tab has a place in the order');
   assert.equal(t.adsEnd, 'ADS Ending Balance 09.30.2026');
   assert.equal(t.ledger, 'AMZ Inventory Ledger 09.30.2026');
   for (const name of Object.values(t)) {
@@ -45,7 +50,8 @@ test('Rule 1.2: default month is last calendar month; override must match the fo
   assert.equal(L.resolveMonth_('', new Date(2026, 9, 22)).label, 'September 2026');
   assert.equal(L.resolveMonth_('', new Date(2027, 0, 5)).label, 'December 2026');
   assert.equal(L.resolveMonth_('august 2026', new Date()).label, 'August 2026');
-  assert.throws(() => L.resolveMonth_('Sept 2026', new Date()), /must look like/);
+  assert.throws(() => L.resolveMonth_('Sept 2026', new Date()), /must look like "September 2026"/);
+  assert.equal(L.resolveMonth_('  October 2026 ', new Date()).label, 'October 2026', 'typed in the menu with extra spaces');
 });
 
 test('numbers: commas, dollars, percents; loud on garbage', () => {
@@ -64,16 +70,13 @@ test('Rule 8.1: bundle SKUs split into components with counts', () => {
   assert.deepEqual(plain(L.splitBundle_('10030')), [{ sku: '10030', count: 1 }]);
 });
 
-test('Rule 6.3: Amazon SKU mapping rules and map merge', () => {
+test('Rule 6.3: Amazon SKU mapping rules; the map is made from the rules (one row per MSKU + ASIN, nothing carried)', () => {
   assert.equal(L.mapAmazonSku_('A0030 - TEMP SKU').sku, 'A0030');
   assert.equal(L.mapAmazonSku_('A80002').sku, 'A80004');
   assert.match(L.mapAmazonSku_('A80002').note, /renamed A80002 → A80004/);
   assert.equal(L.mapAmazonSku_('50001').sku, '50001');
-  const merged = L.mergeSkuMap_([['50001', 'B3', '50001', 'kept']], [{ msku: '50001', asin: 'B3' }, { msku: 'A80002', asin: 'B2' }], '2026-10-05');
-  assert.equal(merged.rows.length, 2);
-  assert.equal(merged.added.length, 1);
-  assert.deepEqual(plain(merged.rows[0]), ['50001', 'B3', '50001', 'kept']);
-  assert.equal(merged.added[0][2], 'A80004');
+  const rows = L.skuMapFromPairs_([{ msku: '50001', asin: 'B3' }, { msku: 'A80002', asin: 'B2' }, { msku: '50001', asin: 'B3' }, { msku: '', asin: 'B9' }]);
+  assert.deepEqual(plain(rows), [['50001', 'B3', '50001', 'same as Amazon SKU'], ['A80002', 'B2', 'A80004', 'renamed A80002 → A80004']]);
 });
 
 test('Rule 5.5: work-order report parsed; fees dropped; multi-day orders kept; TOTAL enforced', () => {
@@ -100,11 +103,14 @@ test('Rule 5.2: ledger must have every day of the month', () => {
   assert.throws(() => L.checkLedgerCoversMonth_({ header, rows: days(1, 30).concat([['10/01/2026', 'X']]) }, m), /outside September 2026/);
 });
 
-test('Rule 4.2a: tie-out rows are the last day of last month only', () => {
-  const t = { header: ['Date', 'MSKU', 'Ending Warehouse Balance'], rows: [['08/30/2026', 'A', '1'], ['08/31/2026', 'A', '2'], ['08/31/2026', 'B', '3']] };
-  const out = L.ledgerLastDateRows_(t, L.monthInfo_(2026, 8).prevEndSerial, 'test ledger');
-  assert.equal(out.rows.length, 2);
-  assert.throws(() => L.ledgerLastDateRows_(t, L.monthInfo_(2026, 9).prevEndSerial, 'test ledger'), /ends on 08\/31\/2026 but it should end on 09\/30\/2026/);
+test('Rule 5.4: the channel rule in plain JS gives the same answer as the Channel formula (first match, any capitals, order tags)', () => {
+  assert.equal(L.channelOfTags_('Free sample, TikTok'), 'Marketing');
+  assert.equal(L.channelOfTags_('TIKTOK-FBM'), 'TikTok');
+  assert.equal(L.channelOfTags_('Replacement - Customer Mistake'), 'CX');
+  assert.equal(L.channelOfTags_('Influencer, Replacement'), 'Marketing');
+  assert.equal(L.channelOfTags_(''), 'DTC');
+  const t = { header: ['Name', 'Tags'], rows: [['#1', 'replacement'], ['#1', ''], ['#2', ''], ['#3', 'tiktok'], ['#3', 'influencer']] };
+  assert.deepEqual(plain(L.shopifyLineChannels_(t)), ['CX', 'CX', 'DTC', 'TikTok', 'TikTok'], 'every line takes its order\'s first-line tags');
 });
 
 test('Rule 5.4: Shopify lines inherit the order\'s tags; split orders stop the run', () => {
@@ -161,8 +167,8 @@ test('Rule 5.5a: work-order lines whose Job is blank or words get a SKU only whe
   const fixes = [['NO GASSY DAYS STARTER KIT 30', '10030', 'typed by hand'], ['Old line', '', '']];
   const r = L.resolveWorkOrderSkus_(lines, bom, fixes, '2026-11-10');
   assert.deepEqual(plain(r.lines.map((l) => l.sku)), ['10030', 'A0030', '10270', '10270', '', '', '10030']);
-  assert.deepEqual(plain(r.lines.map((l) => l.how.split(' (')[0])), ['Job', 'found A0030 in Job', 'found 10270 in Job', 'WO SKU Fixes tab',
-    'NOT COUNTED — no SKU', 'NOT COUNTED — no SKU', 'WO SKU Fixes tab']);
+  assert.deepEqual(plain(r.lines.map((l) => l.how.split(' (')[0])), ['Job', 'found A0030 in Job', 'found 10270 in Job', 'wo_sku_fixes',
+    'NOT COUNTED — no SKU', 'NOT COUNTED — no SKU', 'wo_sku_fixes']);
   assert.deepEqual(plain(r.unresolved.map((l) => l.wo)), ['WO_5', 'WO_6']);
   assert.deepEqual(plain(r.corrected.map((l) => l.wo)), ['WO_2', 'WO_3', 'WO_4', 'WO_7']);
   // The fixes tab keeps hand-typed rows and lists every new text: found SKUs filled in, unknown ones blank to type.
@@ -178,4 +184,19 @@ test('Rule 5.5a: work-order lines whose Job is blank or words get a SKU only whe
   const amb = L.resolveWorkOrderSkus_([line('WO_10', '', 'KIT 10030 OR 10270', 5)], bom, [], 'd');
   assert.equal(amb.lines[0].sku, '');
   assert.match(amb.fixRows[0][2], /more than one kit SKU in the text: 10030, 10270/);
+});
+
+test('Rule 16: the Ops Hub menu connector calls library functions that exist and are visible to it (no trailing "_")', () => {
+  const shim = fs.readFileSync(path.join(__dirname, '..', 'opshub', 'OpsHubMenu.gs'), 'utf8');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'Main.gs'), 'utf8');
+  const called = [...shim.matchAll(/EOM\.([A-Za-z0-9_]+)\(/g)].map((x) => x[1]);
+  assert.deepEqual(called, ['menuWriteOpsHub', 'menuGenerateEOMReport']);
+  for (const fn of called) {
+    assert.ok(!fn.endsWith('_'), fn + ' would be hidden from the library user');
+    assert.match(main, new RegExp('\\nfunction ' + fn + '\\('), fn + ' is defined in Main.gs');
+  }
+  // the menu items point at functions defined in the connector itself
+  const items = [...shim.matchAll(/addItem\('[^']+', '([A-Za-z0-9_]+)'\)/g)].map((x) => x[1]);
+  assert.deepEqual(items, ['eomWriteOpsHub', 'eomGenerateReport']);
+  for (const fn of items) assert.match(shim, new RegExp('\\nfunction ' + fn + '\\('));
 });

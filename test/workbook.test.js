@@ -5,7 +5,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadLogic } = require('./load');
 const { workbookFromModels, isErr } = require('./formulaEngine');
-const { sampleInputs } = require('./fixtures/sampleMonth');
+const { sampleInputs, sampleHub } = require('./fixtures/sampleMonth');
 
 const L = loadLogic();
 const built = L.buildWorkbookModel_(sampleInputs(L));
@@ -14,14 +14,15 @@ const T = built.tabs;
 const sheet = (name) => built.sheets.find((s) => s.name === name);
 
 /** Row (1-based) whose column A and B match, on a summary tab. */
-function findRow(tab, a, b) {
-  const v = sheet(tab).values;
-  for (let r = 0; r < v.length; r++) {
-    const cell = (c) => (typeof v[r][c] === 'string' && v[r][c].charAt(0) === '=' ? wb.value(tab, r + 1, c + 1) : v[r][c]); // MFG rows are formulas
-    if (cell(0) === a && (b === undefined || cell(1) === b)) return r + 1;
-  }
+function findRow(tab, a, b, built2) {
+  const v = (built2 || built).sheets.find((s) => s.name === tab).values;
+  for (let r = 0; r < v.length; r++) if (v[r][0] === a && (b === undefined || v[r][1] === b)) return r + 1;
   throw new Error('No row ' + a + ' / ' + b + ' on ' + tab);
 }
+/** A copy of the sample hub with changes (Ops Hub as someone edited it). */
+const hubWith = (fn) => { const h = sampleHub(2026, 8); fn(h); return h; };
+const build = (overrides) => { const b = L.buildWorkbookModel_(sampleInputs(L, overrides)); return { b, w: workbookFromModels(b.sheets) }; };
+const checkRow = (b, label) => b.sheets.find((s) => s.name === b.tabs.checks).values.find((r) => r[1] === label);
 const val = (tab, row, colLetter) => wb.value(tab, row, colLetter.charCodeAt(0) - 64);
 const plain = (x) => JSON.parse(JSON.stringify(x));
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-6, a + ' ≠ ' + b);
@@ -47,8 +48,9 @@ test('Rule 9.2: ADS block rows come from the sources, not from a typed list', ()
   assert.deepEqual(ads, ['10030', '20001', '41001', '50001', '51002', '80030', '80090', 'A0030']);
   assert.ok(!ads.includes('70001'), 'kit components that are not at ADS must not create rows');
   assert.deepEqual(plain(built.blocks.find((b) => b.kind === 'AMZ').skus), ['50001', 'A0030', 'A80004']);
-  const mfg = built.blocks.filter((b) => b.kind === 'MFG');
-  assert.deepEqual(plain(mfg.map((b) => [b.label, b.rows])), [['MFG', 50]], 'one MFG section, 50 rows');
+  assert.ok(!ads.includes('99999'), 'an Ops Hub row with 0 last month and 0 this month makes no row');
+  const mfg = built.blocks.find((b) => b.kind === 'MFG');
+  assert.deepEqual(plain(mfg.rows.map((x) => [x.mfg, x.sku, x.countBlank])), [['VitaQuest', '70003', false], ['VitaPros', '70003', false]], 'Ops Hub order');
 });
 
 test('Rule 9.3 ADS: begin / receiving / sold (bundles split, CX included, kits) / actual', () => {
@@ -76,37 +78,49 @@ test('Rule 9.3 Amazon: starting = last month\'s last day; actual = last day of t
   }
 });
 
-test('Rule 9.5 MFG: rows mirror MFG Counts in its order; Used is calculated, so delta is 0', () => {
+test('Rule 9.5 MFG: one row per manufacturer + SKU in Ops Hub (its order); Beginning/count from Ops Hub, Received from MFG Receipts; delta 0', () => {
   const vq = findRow(T.variance, 'VitaQuest', '70003');
   const vp = findRow(T.variance, 'VitaPros', '70003');
-  assert.equal(vp, vq + 1, 'same order as the MFG Counts tab (VitaQuest typed first)');
+  assert.equal(vp, vq + 1, 'same order as Ops Hub inventory_eom');
   assert.deepEqual(['E', 'F', 'G', 'H', 'I', 'J'].map((c) => val(T.variance, vq, c)), [100, 50, 30, 120, 120, 0]);
   assert.deepEqual(['E', 'F', 'G', 'H', 'I', 'J'].map((c) => val(T.variance, vp, c)), [0, 300, 0, 300, 300, 0]);
   assert.equal(val(T.variance, vq, 'D'), 'Raw Material - Component');
-  assert.deepEqual(['A', 'B', 'D', 'E', 'I', 'M'].map((c) => val(T.variance, vp + 1, c)), ['', '', '', '', '', ''], 'unused rows stay blank');
-  assert.equal(sheet(T.variance).values.length, vq + 49, 'the 50 MFG rows are the last rows — no subtotal row');
-  // Valuation mirrors the same rows
-  const v1 = findRow(T.valuation, 'VitaQuest', '70003');
-  assert.equal(val(T.valuation, v1, 'E'), 120);
-  assert.equal(val(T.valuation, v1 + 1, 'E'), 300);
+  assert.equal(sheet(T.variance).values.length, vp, 'the MFG rows are the last rows — no subtotal row');
+  assert.match(sheet(T.variance).values[vq - 1][8], /^=SUMIFS\('Ops Hub Inventory 09\.30\.2026'!D:D,/);
+  // Valuation has the same rows
+  assert.equal(val(T.valuation, findRow(T.valuation, 'VitaQuest', '70003'), 'E'), 120);
+  assert.equal(val(T.valuation, findRow(T.valuation, 'VitaPros', '70003'), 'E'), 300);
 });
 
-test('Rule 9.5 / 7.1: a row typed at the bottom of MFG Counts (SKU as a number, no Received) shows up without a rebuild', () => {
-  const counts = sheet(T.mfgInv).values;
-  const w = workbookFromModels(built.sheets.map((s) => (s.name === T.mfgInv ? Object.assign({}, s, { values: counts.concat([['VitaQuest', 70001, 40, '']]) }) : s)));
-  const vq = findRow(T.variance, 'VitaQuest', '70003');
-  const v = (row, c) => w.value(T.variance, row, c.charCodeAt(0) - 64);
-  assert.deepEqual(['A', 'B', 'E', 'F', 'G', 'I', 'J'].map((c) => v(vq + 2, c)), ['VitaQuest', '70001', 0, 0, -40, 40, 0]);
-  assert.equal(v(vq + 2, 'I') + v(vq, 'I') + v(vq + 1, 'I'), 460);
+test('Rule 7.2a: MFG Receipts typed in the report update the MFG rows without a rerun', () => {
+  const rec = sheet(T.mfgReceipts);
+  assert.deepEqual(plain(rec.values[0]), ['MFG', 'SKU', 'Qty']);
+  assert.equal(rec.preserveIfExists, true);
+  const w = workbookFromModels(built.sheets.map((s) => (s === rec ? Object.assign({}, s, { values: [rec.values[0], ['VitaQuest', '70003', 80]] }) : s)));
+  const vq = findRow(T.variance, 'VitaQuest', '70003'), vp = findRow(T.variance, 'VitaPros', '70003');
+  assert.deepEqual(['E', 'F', 'G', 'I', 'J'].map((c) => w.value(T.variance, vq, c.charCodeAt(0) - 64)), [100, 80, 60, 120, 0]);
+  assert.deepEqual(['E', 'F', 'G', 'I'].map((c) => w.value(T.variance, vp, c.charCodeAt(0) - 64)), [0, 0, -300, 300], 'no receipt typed: used goes negative');
+  const r = sheet(T.checks).values.findIndex((x) => x[1] === 'Manufacturer rows with negative Sold / Used') + 1;
+  assert.equal(w.value(T.checks, r, 3), 'CHECK: 1 rows — more arrived than the count shows');
 });
 
-test('Rule 7.1 / 4.4: a new MFG Counts tab starts with last month\'s MFG + SKU rows (non-zero), quantities blank', () => {
-  const b = L.buildWorkbookModel_(sampleInputs(L, { mfgInv: null, mfgStart: [['VitaQuest', '70003', 800], ['VitaPros', 70003, 300], ['VitaPros', '70009', 0]] }));
-  assert.deepEqual(plain(b.sheets.find((s) => s.name === T.mfgInv).values),
-    [['MFG', 'SKU', 'EOM Qty', 'Received Qty'], ['VitaQuest', '70003', '', ''], ['VitaPros', '70003', '', '']]);
-  const boot = [['Code', 'Location', 'SKU', 'Categorization', 'Actual Ending Inventory'], ['ADS1', 'ADS', '1', 'Ending Inventory', '5'],
-    ['VitaPros70003', 'VitaPros', '70003', 'Raw Material - Component', '300'], ['VitaQuest70003', 'VitaQuest', '70003', 'Raw Material - Component', '800']];
-  assert.deepEqual(plain(L.mfgStartFromBootstrap_(boot)), [['VitaPros', '70003', 300], ['VitaQuest', '70003', 800]]);
+test('Rule 9.5: a manufacturer count left blank in Ops Hub stays blank on the report (never 0) and is a FLAG', () => {
+  const { b, w } = build({ hub: hubWith((h) => { h.inventory.find((r) => r.group === 'VitaQuest').end = ''; }) });
+  const v = (tab, row, c) => w.value(tab, row, c.charCodeAt(0) - 64);
+  const vq = findRow(T.variance, 'VitaQuest', '70003', b);
+  assert.deepEqual(['E', 'F', 'G', 'H', 'I', 'J', 'L', 'M', 'N'].map((c) => v(T.variance, vq, c)), [100, 50, '', '', '', '', '', '', '']);
+  const iv = findRow(T.valuation, 'VitaQuest', '70003', b);
+  assert.deepEqual(['E', 'K'].map((c) => v(T.valuation, iv, c)), ['', '']);
+  const row = checkRow(b, 'Manufacturer counts in Ops Hub inventory_eom');
+  assert.equal(row[2], 'FLAG: 1 row(s) have no Sep 2026 count');
+  assert.match(row[3], /Shown blank on Variance Overview and Inventory Valuation \(not 0\): VitaQuest 70003\. Type each count in the Sep 2026 column of Ops Hub inventory_eom/);
+  // totals still tie (blank rows add nothing on either tab)
+  const rows = b.sheets.find((s) => s.name === b.tabs.checks).values;
+  assert.equal(w.value(T.checks, rows.findIndex((x) => x[1] === 'Inventory Valuation total = Variance Overview Total Actual Cost') + 1, 3), 'OK');
+  // a manufacturer row only on MFG Receipts (nothing in Ops Hub) shows with a blank count too
+  const { b: b2 } = build({ mfgReceipts: [['VitaQuest', '70003', 50], ['NewCo', '70009', 10]] });
+  assert.deepEqual(plain(b2.blocks.find((x) => x.kind === 'MFG').rows.map((x) => [x.mfg, x.sku, x.countBlank])),
+    [['VitaQuest', '70003', false], ['VitaPros', '70003', false], ['NewCo', '70009', true]]);
 });
 
 test('Rule 9.3 costs and missing COGS', () => {
@@ -184,16 +198,18 @@ test('Rule 12: checks flag what is wrong and pass what is right', () => {
   const rows = sheet(T.checks).values;
   const result = (label) => { const r = rows.findIndex((x) => x[1] === label); return wb.value(T.checks, r + 1, 3); };
   assert.match(result('SKUs with no COGS cost'), /^FLAG: 2 /);         // A80004 on Variance + Outbound
-  assert.match(result('Amazon rows with no SKU mapping'), /^FLAG: 1 /); // ASIN B8 has sales
+  assert.match(result('Business Report ASINs with sales that are not in the ledger'), /^CHECK: 1 rows/); // ASIN B8 has sales
   assert.match(result('Shopify lines with no SKU (not counted anywhere)'), /^FLAG: 1 /);
   assert.equal(result('Rows where Expected Ending Inventory is negative'), 'OK');
   assert.equal(result('Inventory Valuation total = sum of every row'), 'OK');
   assert.equal(result('Inventory Valuation total = Variance Overview Total Actual Cost'), 'OK');
-  assert.equal(result('MFG Counts filled in'), 'OK');
-  assert.equal(result('MFG Counts fits the MFG section'), 'OK');
-  const map = rows.find((x) => x[1] === 'AMZ SKU Map entries added this run');
-  assert.match(map[3], /A80002 \(B2\) → A80004/);
-  assert.match(map[3], /A0030 - TEMP SKU \(B1\) → A0030/);
+  assert.equal(result('Manufacturer counts in Ops Hub inventory_eom'), 'OK');
+  assert.equal(result('Manufacturer rows with negative Sold / Used'), 'OK');
+  for (const label of ['Ops Hub ending inventory = ADS snapshot and Amazon ledger', 'Ops Hub units sold = Shopify, manualorder_log and Amazon ledger',
+    'Ops Hub kits built = work-order report', 'Amazon starting balance = Ops Hub Aug 2026 ending']) assert.equal(result(label), 'OK', label);
+  // Rule 6.3: the AMZ SKU Map is made from the rules (one row per MSKU + ASIN in the ledger)
+  assert.deepEqual(plain(sheet(T.skuMap).values.slice(1).map((r) => r.slice(0, 3))),
+    [['A0030 - TEMP SKU', 'B1', 'A0030'], ['A80002', 'B2', 'A80004'], ['50001', 'B3', '50001']]);
   const noCost = rows.find((x) => x[1] === 'SKUs with no COGS cost');
   assert.match(noCost[3], /A80004/);
 });
@@ -208,10 +224,49 @@ test('Rule 8: helper tabs', () => {
   assert.equal(wb.value(T.kit, 5, 5), 10); // A0030 → 80030: 1 x 10 kits
 });
 
-test('manual tabs are preserved on rebuild; summaries are not', () => {
-  for (const name of [T.mfgInv, T.adsReceipts, T.prepaid, T.cogs]) assert.equal(sheet(name).preserveIfExists, true, name);
-  for (const name of [T.variance, T.valuation, T.outbound, T.checks, T.ledger]) assert.equal(sheet(name).preserveIfExists, false, name);
-  assert.equal(sheet(T.mfgStart).preserveIfExists, false, 'MFG Starting is regenerated when last month exists');
+test('manual tabs are preserved on rebuild; summaries and the locked Ops Hub copies are not', () => {
+  for (const name of [T.adsReceipts, T.mfgReceipts, T.prepaid, T.cogs]) assert.equal(sheet(name).preserveIfExists, true, name);
+  for (const name of [T.variance, T.valuation, T.outbound, T.checks, T.ledger, T.hubInventory, T.hubSellThru, T.hubWoLog]) assert.equal(sheet(name).preserveIfExists, false, name);
+  assert.deepEqual(plain(built.sheets.map((s) => s.name)).sort(), Array.from(L.tabOrder_(T)).sort(), 'exactly the tabs in the README order');
+});
+
+test('Rules 4 / 9 / 11: the Ops Hub numbers are copied into the report as values (locked), with where they came from', () => {
+  const inv = sheet(T.hubInventory).values;
+  assert.deepEqual(plain(inv[0].slice(0, 4)), ['Location', 'SKU', 'Beginning (08/31/2026)', 'Ending (09/30/2026)']);
+  assert.match(inv[0][4], /Copied from Ops Hub 2\.0 "inventory_eom" \(Aug 2026 and Sep 2026 columns\) when the report was generated \(2026-10-05 09:00 by test\)\. Locked/);
+  assert.deepEqual(plain(inv.find((r) => r[0] === 'VitaPros').slice(0, 4)), ['VitaPros', '70003', '', 300], 'a blank stays blank');
+  assert.ok(L.allFormulas_([sheet(T.hubInventory), sheet(T.hubSellThru), sheet(T.hubWoLog)]).length === 0, 'values only — nothing links to Ops Hub');
+  assert.deepEqual(plain(sheet(T.hubSellThru).values[1].slice(0, 3)), ['DTC', '10030', 3]);
+  assert.deepEqual(plain(sheet(T.hubWoLog).values.slice(1).map((r) => r.slice(1, 4))), [[5, '10030', 0.54], [4, 'A0030', 0.38], [6, 'A0030', 0.38]]);
+  assert.match(sheet(T.kit).values[1][3], /^=SUMIFS\('Ops Hub WO Log 09\.30\.2026'!B:B,'Ops Hub WO Log 09\.30\.2026'!C:C,\$A2\)$/);
+});
+
+test('Rule 12.14: Ops Hub changed after it was written — the report shows the Ops Hub number and Checks names the difference', () => {
+  const { b, w } = build({ hub: hubWith((h) => {
+    h.inventory.find((r) => r.group === 'ADS' && r.sku === '80090').end = 175;
+    h.sellThru.find((r) => r.group === 'DTC' && r.sku === '10030').qty = 4;
+    h.woLog.pop();
+    h.inventory.find((r) => r.group === 'Amazon' && r.sku === 'A0030').begin = 115;
+  }) });
+  assert.equal(w.value(T.variance, findRow(T.variance, 'ADS', '80090', b), 9), 175, 'Actual = Ops Hub');
+  assert.equal(w.value(T.outbound, findRow(T.outbound, '10030', undefined, b), 4), 4, 'DTC units = Ops Hub');
+  assert.equal(w.value(T.variance, findRow(T.variance, 'ADS', 'A0030', b), 6), 4, 'kits built = Ops Hub wo_log');
+  const row = (label) => checkRow(b, label);
+  assert.deepEqual(plain(row('Ops Hub ending inventory = ADS snapshot and Amazon ledger').slice(2)),
+    ['FLAG: 1 differ', 'ADS 80090: Ops Hub 175, ADS snapshot 170. The report uses the Ops Hub numbers. If Ops Hub was changed on purpose, nothing to do; otherwise run EOM → Write month to Ops Hub again, then Generate EOM Report.']);
+  assert.match(row('Ops Hub units sold = Shopify, manualorder_log and Amazon ledger')[3], /^DTC 10030: Ops Hub 4, reports 3\./);
+  assert.match(row('Ops Hub kits built = work-order report')[3], /^A0030: Ops Hub 4, work-order report 10\./);
+  assert.equal(row('Amazon starting balance = Ops Hub Aug 2026 ending')[2], 'FLAG: 1 differ');
+  assert.match(row('Amazon starting balance = Ops Hub Aug 2026 ending')[3], /^Amazon A0030: Ops Hub Aug 2026 ending 115, ledger 09\/01\/2026 starting 120\./);
+  // Amazon Beginning itself still comes from the ledger (Rule 4.2)
+  assert.equal(w.value(T.variance, findRow(T.variance, 'Amazon', 'A0030', b), 5), 120);
+});
+
+test('Rule 3: tabs the report does not make (old layout) are left alone and listed on Checks', () => {
+  const { b } = build({ extraTabs: ['MFG Counts 09.30.2026', 'WO SKU Fixes'] });
+  assert.deepEqual(plain(checkRow(b, 'Tabs this version does not make').slice(2)),
+    ['CHECK: 2 tab(s)', 'MFG Counts 09.30.2026, WO SKU Fixes — left as they were (probably from the old layout). Nothing uses them: delete them before sending.']);
+  assert.equal(checkRow(built, 'Tabs this version does not make'), undefined);
 });
 
 test('raw tabs: SKU columns are text, quantities numbers, ledger dates real dates', () => {
@@ -238,44 +293,27 @@ test('manual tabs: quantities typed as text still count (converted to numbers)',
   assert.throws(() => L.buildWorkbookModel_(sampleInputs(L, { adsReceipts: [['PO-1', '50001', 'ten']] })), /Expected a number on ADS Receipts/);
 });
 
-test('Rule 4.2a: Amazon tie-out on Checks — OK, not compared, or problem', () => {
-  const tieRow = (b) => { const ch = b.sheets.find((x) => x.name === b.tabs.checks).values; return ch.find((r) => r[1] === 'Amazon starting balance = last month\'s ending'); };
-  assert.equal(tieRow(built)[2], 'OK');
-  const none = L.buildWorkbookModel_(sampleInputs(L, { amzPrevEnd: { rows: null, source: 'looked in the August 2026 folder', problem: null } }));
-  assert.equal(tieRow(none)[2], 'INFO');
-  assert.match(tieRow(none)[3], /Not compared — no 08\/31\/2026 Amazon ledger found/);
-  const bad = L.buildWorkbookModel_(sampleInputs(L, { amzPrevEnd: { rows: null, source: 'x', problem: 'x ends on 08/30/2026' } }));
-  assert.equal(tieRow(bad)[2], 'FLAG: not compared');
-  // Beginning never depends on last month's ledger
-  const r = findRow(T.variance, 'Amazon', 'A0030');
-  const rNone = none.sheets.find((x) => x.name === T.variance).values.findIndex((v) => v[0] === 'Amazon' && v[1] === 'A0030') + 1;
-  assert.equal(r, rNone);
-  assert.match(sheet(T.variance).values[r - 1][4], /Starting|'AMZ Starting Balance/);
-  assert.equal(val(T.variance, r, 'E'), 120);
-});
-
-test('Rule 4.2: AMZ Starting tab = this month\'s 1st-of-month ledger rows', () => {
+test('Rule 4.2: AMZ Starting tab = this month\'s 1st-of-month ledger rows; Amazon Beginning comes from them, not from Ops Hub', () => {
   const v = sheet(T.amzStart).values;
   assert.equal(v.length, 4);
   assert.ok(v.slice(1).every((row) => row[0] === v[1][0]));
-  const diffs = L.amzTieOut_({ header: ['MSKU', 'Ending Warehouse Balance'], rows: [['A', '5'], ['A', '1'], ['B', '2']] },
-    { header: ['MSKU', 'Starting Warehouse Balance'], rows: [['A', '6'], ['C', '1']] });
-  assert.deepEqual(plain(diffs), [{ sku: 'B', prevEnd: 2, start: 0, diff: -2 }, { sku: 'C', prevEnd: 0, start: 1, diff: 1 }]);
-  // with a mapping, two MSKUs for one SKU are added together before comparing
-  const byOurs = L.amzTieOut_({ header: ['MSKU', 'Ending Warehouse Balance'], rows: [['A - TEMP SKU', '5']] },
-    { header: ['MSKU', 'Starting Warehouse Balance'], rows: [['A - TEMP SKU', '2'], ['A', '3']] }, (m) => m.replace(' - TEMP SKU', ''));
-  assert.deepEqual(plain(byOurs), []);
+  const r = findRow(T.variance, 'Amazon', 'A0030');
+  assert.match(sheet(T.variance).values[r - 1][4], /'AMZ Starting Balance 08\.31\.2026'/);
+  assert.equal(val(T.variance, r, 'E'), 120);
+  // the same rule in plain JS (used to compare with Ops Hub): two MSKUs for one SKU are added together
+  const H = ['MSKU', 'Starting Warehouse Balance', 'In Transit Between Warehouses', 'Warehouse Transfer In/Out'];
+  assert.deepEqual(plain(L.amzStartBySku_({ header: H, rows: [['A0030 - TEMP SKU', '2', '1', '0'], ['A0030', '3', '0', '-1'], ['A80002', '5', '', '']] })),
+    { A0030: 5, A80004: 5 });
 });
 
-test('Rule 12.3: an ASIN or MSKU mapped to two different SKUs is flagged', () => {
-  const label = 'Amazon MSKU/ASIN mapped to more than one of our SKUs';
-  const row = (b) => b.sheets.find((x) => x.name === b.tabs.checks).values.find((r) => r[1] === label);
-  assert.equal(row(built)[2], 'OK');
-  const bad = L.buildWorkbookModel_(sampleInputs(L, { skuMapExisting: [['A0030 - TEMP SKU', 'B1', 'A0030', ''], ['A0030-NEW', 'B1', 'A0031', 'typed']] }));
-  assert.equal(row(bad)[2], 'FLAG: 1');
-  assert.match(row(bad)[3], /ASIN B1 → A0030 \/ A0031/);
-  const same = L.buildWorkbookModel_(sampleInputs(L, { skuMapExisting: [['A0030 - TEMP SKU', 'B1', 'A0030', ''], ['A0030-NEW', 'B1', 'A0030', '']] }));
-  assert.equal(row(same)[2], 'OK', 'two MSKUs on one ASIN is fine when they map to the same SKU');
+test('Rule 12.3: an ASIN whose MSKUs map to two different SKUs is flagged', () => {
+  const label = 'Amazon ASIN mapped to more than one of our SKUs';
+  assert.equal(checkRow(built, label)[2], 'OK', 'A0030 - TEMP SKU and A0030 on one ASIN would both be A0030');
+  const raw = sampleInputs(L).ledger;
+  const extra = raw.rows[raw.rows.length - 1].slice(); extra[2] = 'B1'; extra[3] = 'A0031';
+  const { b } = build({ ledger: { header: raw.header, rows: raw.rows.concat([extra]) } });
+  assert.equal(checkRow(b, label)[2], 'FLAG: 1');
+  assert.match(checkRow(b, label)[3], /ASIN B1 → A0030 \/ A0031/);
   assert.deepEqual(plain(L.skuMapConflicts_([['M1', 'X', 'S1', ''], ['M1', 'Y', 'S2', '']])), [{ kind: 'MSKU', key: 'M1', skus: ['S1', 'S2'] }]);
 });
 
@@ -348,10 +386,8 @@ test('Rule 9.3 / 12.13: Amazon Sold = shipped; Delta is split into ledger events
   const res = (label) => wb.value(T.checks, ch.findIndex((x) => x[1] === label) + 1, 3);
   assert.equal(res('Amazon Delta explained by ledger events'), 'OK');
   assert.equal(res('Amazon units ordered vs shipped (Sold / Used uses shipped)'), 'INFO: ordered 25 / shipped 25');
-  // a balance change with no ledger event behind it is flagged
-  const raw = sampleInputs(L).ledger;
-  const last = raw.rows[raw.rows.length - 1].slice(); last[18] = '11'; // 50001 ending 4 → 11 with no event
-  const b = L.buildWorkbookModel_(sampleInputs(L, { ledger: { header: raw.header, rows: raw.rows.slice(0, -1).concat([last]) } }));
+  // a balance change with no ledger event behind it is flagged (Ops Hub says Amazon 50001 ended at 11, the ledger 4)
+  const b = L.buildWorkbookModel_(sampleInputs(L, { hub: hubWith((h) => { h.inventory.find((r) => r.group === 'Amazon' && r.sku === '50001').end = 11; }) }));
   const w2 = workbookFromModels(b.sheets);
   const c2 = b.sheets.find((s) => s.name === b.tabs.checks).values;
   assert.equal(w2.value(b.tabs.checks, c2.findIndex((x) => x[1] === 'Amazon Delta explained by ledger events') + 1, 3),
@@ -361,8 +397,9 @@ test('Rule 9.3 / 12.13: Amazon Sold = shipped; Delta is split into ledger events
 test('Rule 4.2: Amazon Beginning/Ending include units travelling between Amazon warehouses', () => {
   const f = sheet(T.variance).values[findRow(T.variance, 'Amazon', 'A0030') - 1];
   assert.match(f[4], /Starting.*|SUMIFS.*\+SUMIFS.*\+SUMIFS/);
-  assert.match(f[8], /^=SUMIFS\(.*MAX.*\)\+SUMIFS\(.*MAX.*\)$/);
+  assert.match(f[8], /^=SUMIFS\('Ops Hub Inventory 09\.30\.2026'!D:D,/, 'Actual Ending = Ops Hub (Write month to Ops Hub put Ending + In Transit there)');
   assert.equal(val(T.variance, findRow(T.variance, 'Amazon', 'A0030'), 'I'), 115, '107 on shelf + 5 expired + 3 in transit');
+  assert.equal(plain(L.amazonOnHand_(sampleInputs(L).ledger)).find((d) => d.sku === 'A0030' && d.qty > 100).qty, 107 + 3);
 });
 
 test('Rule 5.5a: kit lines with a blank or wordy Job — counted when certain, otherwise FLAG and listed on WO SKU Fixes', () => {
@@ -382,17 +419,17 @@ test('Rule 5.5a: kit lines with a blank or wordy Job — counted when certain, o
   const x1 = woRows.find((r) => r[0] === 'WO_X1'), x2 = woRows.find((r) => r[0] === 'WO_X2');
   assert.equal(x1[4], '10030');
   assert.equal(x2[4], '', 'unresolved line has no SKU, so its kits match no row');
-  // Receiving for ADS 10030 = the original kits + 7 (the 9 are not counted)
+  // Kits built on the report come from Ops Hub wo_log (unchanged here), so Checks shows the work-order report differs
   const v = b.sheets.find((s) => s.name === b.tabs.variance).values;
   const r10030 = v.findIndex((r) => r[0] === 'ADS' && r[1] === '10030') + 1;
-  assert.equal(w.value(b.tabs.variance, r10030, 6) - wb.value(T.variance, findRow(T.variance, 'ADS', '10030'), 6), 7);
+  assert.equal(w.value(b.tabs.variance, r10030, 6), wb.value(T.variance, findRow(T.variance, 'ADS', '10030'), 6));
+  assert.match(sh(b.tabs.checks).values.find((r) => r[1] === 'Ops Hub kits built = work-order report')[3], /^10030: Ops Hub 5, work-order report 12\./);
   const checks = sh(b.tabs.checks).values;
   const line = (label) => checks.find((r) => r[1] === label);
   assert.match(line('Work-order lines with no usable SKU (kits NOT counted)')[2], /^FLAG: 1 line\(s\) \/ 9 kits not counted/);
   assert.match(line('Work-order lines with no usable SKU (kits NOT counted)')[3], /WO_X2 .*Job blank, Description "NO GASSY DAYS STARTER KIT 30"/);
   assert.match(line('Work-order SKUs not taken from Job (confirm)')[2], /^CHECK: 1 line/);
-  assert.deepEqual(plain(sh(b.tabs.woFixes).values.slice(1).map((r) => [r[0], r[1]])),
-    [['NO GASSY DAYS STARTER KIT 10030', '10030'], ['NO GASSY DAYS STARTER KIT 30', '']]);
+  assert.match(line('Work-order lines with no usable SKU (kits NOT counted)')[3], /Type our SKU next to each on Ops Hub "wo_sku_fixes"/);
   // The normal sample month has nothing to fix.
   const ok = sheet(T.checks).values;
   assert.equal(ok.find((r) => r[1] === 'Work-order lines with no usable SKU (kits NOT counted)')[2], 'OK');
@@ -465,6 +502,7 @@ test('Rule 11.2a: a bundle with no COGS cost is costed from its parts; its own C
   const nameIx = sh.header.indexOf('Name');
   const line = (order, sku) => tin.map((x, i) => (i === skuIx ? sku : i === nameIx ? order : x));
   sh.rows.push(line('#90', '80030,80030,51002'), line('#91', '80030,A80004'));
+  inputs.hub = hubWith((h) => { h.sellThru.push({ group: 'TikTok', sku: '80030,80030,51002', qty: 1 }, { group: 'TikTok', sku: '80030,A80004', qty: 1 }); });
   // 80030,51002 has no COGS row; 80090,80090's Total was typed as $0.
   inputs.cogs = { header: inputs.cogs.header, rows: inputs.cogs.rows.filter((r) => r[0] !== '80030,51002')
     .map((r) => (r[0] === '80090,80090' ? [r[0], r[1], 0, 0, 0, 0] : r)) };
@@ -511,7 +549,9 @@ test('Rule 8.1b: Outbound Avg Cost = on-hand cost + one mailer, charged on Shopi
   raw.ledger.push(amz);
   const b = L.buildWorkbookModel_(sampleInputs(L, {
     manualLog: L.parseOpsLog_(raw.manualLog, 'manual', m),
-    ledger: L.toTable_(L.parseCsv_(csv(raw.ledger)), 'ledger')
+    ledger: L.toTable_(L.parseCsv_(csv(raw.ledger)), 'ledger'),
+    // what Write month to Ops Hub puts in sell_thru monthly for these
+    hub: hubWith((h) => { h.sellThru.push({ group: 'Samples', sku: '80030', qty: 2 }, { group: 'Amazon', sku: '80030', qty: 1 }); })
   }));
   const w = workbookFromModels(b.sheets);
   const ob = b.sheets.find((s) => s.name === b.tabs.outbound).values;

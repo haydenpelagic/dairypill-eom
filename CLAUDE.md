@@ -1,13 +1,13 @@
 # DairyPill EOM — notes for Claude Code
 
-Google Apps Script that builds DairyPill's end-of-month inventory/COGS workbook from a Drive folder of raw reports.
+Google Apps Script for DairyPill's month end, in two steps (owner, 2026-11-16): **1. Write month to Ops Hub** (a Drive folder of raw reports → Ops Hub 2.0) then **2. Generate EOM Report** (Ops Hub + the reports → the accounting workbook).
 The owner is non-technical: explain in plain English, never ask them to review code.
 
 ## Ownership — DairyPill owns everything (fact, confirmed in Drive 2026-11-10)
 - The live script is the Apps Script project **"EOM Automation"** (`1RblqXtQ…`, `.clasp.json`), **owned by ops@dairypill.com**. hayden@pelagic.co is an editor. This is the ONLY deploy target — never change `.clasp.json` to another project.
 - The months folder **DairyPill › EOM Reports** (`16H9CC…`, `PARENT_FOLDER_ID`) lives in DairyPill's shared drive.
 - The old personal project **"DairyPill EOM"** (`1VY7Ejzw…`) is retired and in the trash. Never deploy to it, restore it, or point anything at it. A backup clone exists on the owner's Mac only.
-- **How it runs:** someone opens EOM Automation in the Apps Script editor and presses **Run** on `buildEOM` / `shopifyOnly`. Workspace Studio was tried and **abandoned 2026-11-10** (it won't run from the DairyPill account) — don't re-add Studio steps, `addOns` in `appsscript.json`, or suggest Studio. The code is in git history (commit 400bafa) if the owner ever asks.
+- **How it runs:** from the **EOM** menu in Ops Hub 2.0 (RULES 16): `1. Write month to Ops Hub`, `2. Generate EOM Report`, each asks for the month. The menu comes from a tiny connector script pasted ONCE into Ops Hub's own Apps Script (`opshub/OpsHubMenu.gs`), which uses EOM Automation as a library (identifier `EOM`, HEAD) — so EOM Automation stays the only deploy target and every push is live in the menu. Backup: the Apps Script editor → **Run** on `writeOpsHub` / `generateEOMReport` / `shopifyOnly` (month = `MONTH_OVERRIDE`). Workspace Studio was tried and **abandoned 2026-11-10** (it won't run from the DairyPill account) — don't re-add Studio steps, `addOns` in `appsscript.json`, or suggest Studio. The code is in git history (commit 400bafa) if the owner ever asks.
 - Anything that must be done as DairyPill (approving permissions, sharing) is a human click in that account — say so plainly; don't suggest moving anything back to a personal account to avoid it.
 
 ## Source of truth
@@ -18,8 +18,10 @@ The owner is non-technical: explain in plain English, never ask them to review c
 ## Layout
 - `src/Config.gs` — every setting (folder ID, channel rules, SKU renames, column names).
 - `src/Logic.gs` — pure functions: parsing, SKU lists, and every formula. No Google calls. All tested in Node.
-- `src/Main.gs` — entry points `buildEOM()` / `shopifyOnly()` / `writeOpsHub()` (thin wrappers over `buildEOMFor_(month)` / `shopifyOnlyFor_(month)` / `writeOpsHubFor_(month)`); Drive reading, starting balances, applying the Ops Hub write plan.
-- **Ops Hub writes (RULES 15):** only `writeOpsHub` writes to Ops Hub 2.0 (`inventory_eom`, `sell_thru monthly`, `wo_log`, `sku_matrix`), from the finished workbook, run by hand after checking it. `buildEOM` only reads the Ops Hub. The plan is pure (`planOpsHubWrite_` in Logic.gs, tested in `test/opsHub.test.js`); nothing is written unless every check passes.
+- `src/Main.gs` — entry points `writeOpsHub()` / `generateEOMReport()` / `shopifyOnly()` (thin wrappers over `writeOpsHubFor_(month)` / `generateEOMReportFor_(month)` / `shopifyOnlyFor_(month)`), the menu functions `menuWriteOpsHub()` / `menuGenerateEOMReport()` (called by the Ops Hub connector — never rename them or add a trailing `_`, which hides them from a library user); Drive and Ops Hub reading, applying the Ops Hub write plan.
+- **Order (owner, 2026-11-16): Ops Hub first.** Only `writeOpsHub` writes to Ops Hub 2.0 (`inventory_eom` ADS + Amazon rows only — manufacturer rows are typed by hand and never written; `sell_thru monthly`; `wo_log`; `sku_matrix`; and `wo_sku_fixes`), straight from the month folder's files (RULES 15). The numbers come from pure functions (`adsOnHand_`, `amazonOnHand_`, `soldByChannel_`, `kitLines_`) that must stay equal to what the report's formulas give — `test/opsHub.test.js` proves it on the sample month. The plan is pure (`planOpsHubWrite_`); nothing is written unless every check passes.
+- **The report only reads Ops Hub** and **locks** its numbers as values (Ops Hub Inventory / Sell Thru / WO Log tabs); Beginning/Actual inventory, Outbound units and kits built come from those tabs (Amazon Beginning stays the ledger, RULES 4.2). Checks 12.14 compares them with the raw reports. A blank manufacturer count stays blank on the report (never 0) + FLAG.
+- `opshub/OpsHubMenu.gs` — the connector pasted once into Ops Hub (not bundled, not uploaded). `test/logic.test.js` checks it only calls library functions that exist.
 - `src/Sheets.gs` — writing sheet models to Google Sheets.
 - `dist/` — exactly what clasp uploads to Apps Script: `DairyPill_EOM.gs` (generated bundle) + `appsscript.json` (copied). Never edit by hand (`npm run bundle`; a test fails if stale).
 - `.clasp.json` — Apps Script project (owned by the DairyPill account), `rootDir: dist`.
@@ -39,5 +41,5 @@ The owner is non-technical: explain in plain English, never ask them to review c
 - Tab names ≤ 31 chars, no "/" (dates as MM.DD.YYYY).
 - SKU columns are written as text; quantities as numbers.
 - Errors are loud and plain-English; validate all inputs before changing anything in Drive.
-- After any code change: `npm test` must pass, then `npm run bundle`, then commit and push — **pushing is the deploy** (GitHub uploads to Apps Script). Don't tell the owner to paste anything; tell them it goes live in about a minute and to check the Actions tab if unsure. Never run `clasp push` from a cloud session.
+- After any code change: `npm test` must pass, then `npm run bundle`, then commit and push — **pushing is the deploy** (GitHub uploads to Apps Script). Don't tell the owner to paste anything; tell them it goes live in about a minute and to check the Actions tab if unsure. Never run `clasp push` from a cloud session. The one exception to "never paste" is the one-time Ops Hub connector (`opshub/OpsHubMenu.gs`, SETUP §A.4) — only if it ever has to change, which should be never.
 - Real Drive/Script IDs live in `src/Config.gs` / `.clasp.json` (never typed in the Apps Script editor — each upload replaces the whole project).

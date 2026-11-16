@@ -1,133 +1,274 @@
 // =============================================================================
-// DairyPill EOM Report — ENTRY POINTS
-//   buildEOM()    builds (or rebuilds) the month's EOM workbook      (Rules 1–12)
-//   shopifyOnly() makes only the standalone Shopify Sell Thru file   (Rule 13)
-// Pick the function in the toolbar dropdown and press Run.
+// DairyPill EOM Report — ENTRY POINTS (RULES.md section 1)
+//   1. writeOpsHub()        the month folder's reports → Ops Hub 2.0              (Rule 15)
+//   2. generateEOMReport()  Ops Hub + the reports → the month's EOM report       (Rules 2–12)
+//      shopifyOnly()        only the standalone Shopify Sell Thru file            (Rule 13)
+// Normally run from Ops Hub's EOM menu (menuWriteOpsHub / menuGenerateEOMReport, Rule 16), which asks
+// for the month. From the Apps Script editor: pick the function and press Run (month = MONTH_OVERRIDE).
 // =============================================================================
 
-function buildEOM() {
-  return buildEOMFor_(CONFIG.MONTH_OVERRIDE);
+function writeOpsHub() {
+  return writeOpsHubFor_(CONFIG.MONTH_OVERRIDE);
+}
+
+function generateEOMReport() {
+  return generateEOMReportFor_(CONFIG.MONTH_OVERRIDE);
 }
 
 function shopifyOnly() {
   return shopifyOnlyFor_(CONFIG.MONTH_OVERRIDE);
 }
 
-/** Rule 15: copies the finished month (this month's workbook) into the Ops Hub 2.0 tabs. Run after checking the workbook. */
-function writeOpsHub() {
-  return writeOpsHubFor_(CONFIG.MONTH_OVERRIDE);
+// -----------------------------------------------------------------------------
+// Rule 16: the EOM menu in Ops Hub 2.0. Its small connector script (opshub/OpsHubMenu.gs, pasted once into Ops Hub)
+// calls these two through the library. Names must not end in "_" (those are hidden from a library's users).
+// -----------------------------------------------------------------------------
+
+function menuWriteOpsHub() {
+  return runFromMenu_('Write month to Ops Hub', writeOpsHubFor_, false);
 }
 
-/** Rule 1.2: monthText is "September 2026", or blank for last calendar month. Returns the workbook link. */
-function buildEOMFor_(monthText) {
+function menuGenerateEOMReport() {
+  return runFromMenu_('Generate EOM Report', generateEOMReportFor_, true);
+}
+
+/** Rule 16: asks which month (blank = last month), runs, and shows the result or the plain-English reason it stopped. */
+function runFromMenu_(title, fn, isReport) {
+  var ui = SpreadsheetApp.getUi();
+  var last = resolveMonth_('', new Date());
+  var resp = ui.prompt(title, 'Which month? Leave blank for ' + last.label + ', or type another the same way (e.g. "' + last.label + '").', ui.ButtonSet.OK_CANCEL);
+  if (resp.getSelectedButton() !== ui.Button.OK) return null;
+  var m;
+  try {
+    m = resolveMonth_(resp.getResponseText(), new Date());
+  } catch (err) {
+    ui.alert(title, err.message, ui.ButtonSet.OK);
+    return null;
+  }
+  try {
+    var out = fn(m.label);
+    if (isReport) {
+      showLink_(ui, title + ' — ' + m.label, 'The report is ready in the ' + m.label + ' folder. Open the Checks tab first: anything marked FLAG needs attention.',
+        out, 'Open the ' + m.label + ' report');
+    } else {
+      ui.alert(title + ' — ' + m.label + ': done', out, ui.ButtonSet.OK);
+    }
+    return out;
+  } catch (err) {
+    console.error(err);
+    ui.alert(title + ' — ' + m.label + ': stopped', err.message, ui.ButtonSet.OK);
+    return null;
+  }
+}
+
+/** A small pop-up with a message and a link that opens in a new tab. */
+function showLink_(ui, title, text, url, linkText) {
+  var esc = function (x) { return String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
+  var html = HtmlService.createHtmlOutput('<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.4"><p>' + esc(text) + '</p><p><a href="' +
+    esc(url) + '" target="_blank">' + esc(linkText) + '</a></p></div>').setWidth(440).setHeight(150);
+  ui.showModalDialog(html, title);
+}
+
+// -----------------------------------------------------------------------------
+// Step 1 — Rule 15: Write month to Ops Hub
+// -----------------------------------------------------------------------------
+
+/**
+ * Rule 15: reads the month folder's reports (ADS snapshot, Amazon ledger, Shopify orders, work orders) and the Ops Hub
+ * logs, and writes the month into Ops Hub 2.0: sku_matrix (new SKUs), wo_log (kit lines), inventory_eom (ADS and
+ * Amazon rows of the month's column — manufacturer rows are typed by hand) and sell_thru monthly (the month's column).
+ * Everything is read and checked first; nothing is written if anything is wrong (the one exception: work-order lines
+ * with no SKU are added to wo_sku_fixes so you can type it). Safe to run again: the month is replaced, never doubled.
+ * Returns the plain-English summary.
+ */
+function writeOpsHubFor_(monthText) {
   var startedAt = new Date();
   var m = resolveMonth_(monthText, startedAt);
   var tabs = tabNames_(m);
-  var parent = parentFolder_();
-  var monthFolder = subfolder_(parent, m.label, true);
-  log_('Building ' + workbookName_(m) + ' from folder "' + m.label + '"');
+  var f = monthFiles_(m, ['ADS', 'LEDGER', 'SHOPIFY', 'WORK_ORDERS']);
+  log_('Writing ' + m.label + ' into Ops Hub from folder "' + m.label + '"');
 
-  // Rule 2: recognize every file by its columns.
-  var scan = scanFolder_(monthFolder, m);
-  if (scan.byType.MANUAL.length) {
-    // Rule 2.5: shipments out of ADS now come from the Ops Hub logs; a file as well would double count.
-    throw new Error('"' + scan.byType.MANUAL[0].file.getName() + '" in "' + m.label + '" is a Manual Orders file. Those are no longer used: ' +
-      'shipments out of ADS are read from Ops Hub "' + CONFIG.OPS_HUB.manualLog.sheetName + '" and "' + CONFIG.OPS_HUB.amzLog.sheetName +
-      '". Make sure they are there, then remove the file from the folder and run again.');
+  // Read and check every file BEFORE changing anything (Rule 1.4).
+  var shopify = tableFromEntry_(f.e.SHOPIFY, 'Shopify order export');
+  checkShopifyOrdersContiguous_(shopify);
+  var counted = shopifyLinesCounted_(shopify);                // Rule 5.4a: status columns present
+  var ledger = tableFromEntry_(f.e.LEDGER, 'Amazon Inventory Ledger');
+  checkLedgerCoversMonth_(ledger, m);
+  var ads = tableFromEntry_(f.e.ADS, 'ADS stock snapshot');
+  var workOrders = parseWorkOrdersHtml_(f.e.WORK_ORDERS.text, m);
+  var todayStr = Utilities.formatDate(startedAt, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+
+  var hub = openOpsHub_();
+  var manualLog = parseOpsLog_(readOpsLogValues_(hub, CONFIG.OPS_HUB.manualLog), 'manual', m);
+  var amzLog = parseOpsLog_(readOpsLogValues_(hub, CONFIG.OPS_HUB.amzLog), 'amz', m);
+  var bom = bomFromSource_(readBomSource_());
+
+  // Rule 5.5a: every kit line needs a SKU before wo_log is written.
+  var fixes = woFixesTab_(hub, f.parent, m);
+  var wo = resolveWorkOrderSkus_(workOrders.lines, bom.rows, fixes.rows, todayStr);
+  var fixesChanged = fixes.create || woFixRowsKey_(wo.fixRows) !== woFixRowsKey_(fixes.rows);
+  if (wo.unresolved.length) {
+    writeWoFixes_(hub, fixes, wo.fixRows);
+    var kits = wo.unresolved.reduce(function (a, l) { return a + (Number(l.pieces) || 0); }, 0);
+    throw new Error('Nothing was written to Ops Hub for ' + m.label + ': ' + wo.unresolved.length + ' work-order line(s) (' + kits +
+      ' kits) have no SKU the script can be sure of — ' + wo.unresolved.map(woLineText_).join('; ') + '. They are now listed on Ops Hub "' +
+      CONFIG.OPS_HUB.woFixes.sheetName + '" with Our SKU blank. Type our SKU next to each, then run Write month to Ops Hub again.');
   }
-  // Rule 2.2a: first run with last month's snapshot dropped in next to this month's — pick it out by content.
-  var looseAdsStart = splitFirstRunAds_(parent, monthFolder, m, scan);
-  requireOneOfEach_(scan, ['ADS', 'LEDGER', 'BIZ', 'SHOPIFY', 'WORK_ORDERS'], m.label);
-  var e = {};
-  ['ADS', 'LEDGER', 'BIZ', 'SHOPIFY', 'WORK_ORDERS'].forEach(function (k) { e[k] = scan.byType[k][0]; });
+  var data = {
+    inventory: adsOnHand_(ads).concat(amazonOnHand_(ledger)),
+    sellThru: soldByChannel_(shopify, manualLog, ledger),
+    kits: kitLines_(wo.lines, m),
+    bomDescs: bom.descs
+  };
 
-  // Read and check every raw file BEFORE changing anything in Drive (Rule 1.4).
-  var shopifyTable = tableFromEntry_(e.SHOPIFY, 'Shopify order export');
+  var W = CONFIG.OPS_HUB_WRITE, tz = hub.getSpreadsheetTimeZone();
+  var sheets = {}, hubValues = {};
+  ['skuMatrix', 'woLog', 'inventoryEom', 'sellThru'].forEach(function (k) {
+    sheets[k] = sheetByName_(hub, W[k].sheetName);
+    if (!sheets[k]) throw new Error('Ops Hub 2.0 has no tab named "' + W[k].sheetName + '". Nothing was written.');
+    hubValues[k] = datesToSerials_(sheets[k].getDataRange().getValues(), tz);
+  });
+  var plan = planOpsHubWrite_(data, hubValues, m); // stops here, before any write, if anything is wrong
+
+  if (fixesChanged) writeWoFixes_(hub, fixes, wo.fixRows);
+  applySkuMatrix_(sheets.skuMatrix, plan.skuMatrix);
+  applyWoLog_(sheets.woLog, plan.woLog, hubValues.woLog[0]);
+  applyMonthColumn_(sheets.inventoryEom, plan.inventoryEom);
+  applyMonthColumn_(sheets.sellThru, plan.sellThru);
+  SpreadsheetApp.flush();
+
+  // Rule 2.3: rename the raw files to their tab names (after a successful write).
+  renameEntry_(f.e.ADS, tabs.adsEnd);
+  renameEntry_(f.e.LEDGER, tabs.ledger);
+  renameEntry_(f.e.SHOPIFY, tabs.shopify);
+  renameEntry_(f.e.WORK_ORDERS, tabs.workOrders);
+  if (f.e.BIZ) renameEntry_(f.e.BIZ, tabs.biz);
+
+  // Rule 15.6: what was done, and what to look at.
+  var lines = opsHubSummary_(plan);
+  if (fixes.create) lines.push(CONFIG.OPS_HUB.woFixes.sheetName + ': tab created' + (fixes.seededFrom ? ' with the ' + fixes.rows.length + ' rows of the WO SKU Fixes tab in ' + fixes.seededFrom : '') + '.');
+  if (wo.corrected.length) lines.push('CHECK — work-order SKUs not taken from Job (confirm, or change on ' + CONFIG.OPS_HUB.woFixes.sheetName + ' and run again): ' + wo.corrected.map(woLineText_).join('; ') + '.');
+  [[CONFIG.OPS_HUB.manualLog.sheetName, manualLog], [CONFIG.OPS_HUB.amzLog.sheetName, amzLog]].forEach(function (p) {
+    if (p[1].notShipped) lines.push('CHECK — ' + p[0] + ': ' + p[1].notShipped + ' row(s) with no Ship Date were not counted (not shipped yet).');
+  });
+  var skipped = counted.filter(function (x) { return !x; }).length;
+  if (skipped) lines.push('INFO — ' + skipped + ' Shopify line(s) not counted (cancelled, or refunded/voided and never shipped).');
+  lines.push('Next: type any manufacturer counts in ' + W.inventoryEom.sheetName + ', then EOM → Generate EOM Report.');
+  lines.forEach(log_);
+  log_('Done in ' + Math.round((new Date() - startedAt) / 1000) + 's: ' + hub.getUrl());
+  return lines.join('\n');
+}
+
+/**
+ * Rule 5.5a: the Ops Hub wo_sku_fixes tab: {sheet, rows, create, seededFrom}. When it doesn't exist yet it is started
+ * from the WO SKU Fixes tab of this month's or last month's report (where these lived before 2026-11-16).
+ */
+function woFixesTab_(hub, parent, m) {
+  var cfg = CONFIG.OPS_HUB.woFixes;
+  var sheet = sheetByName_(hub, cfg.sheetName);
+  var three = function (rows) { return rows.map(function (r) { return [r[0], r[1], r[2] === undefined ? '' : r[2]]; }); };
+  if (sheet) return { sheet: sheet, rows: three(readSheetTable_(sheet).rows), create: false, seededFrom: null };
+  var out = { sheet: null, rows: [], create: true, seededFrom: null };
+  [m.label, m.prevLabel].some(function (label) {
+    var folder = subfolder_(parent, label, false);
+    var file = folder && fileByName_(folder, workbookName_(parseMonthLabel_(label)));
+    var tab = file && sheetByName_(SpreadsheetApp.open(file), 'WO SKU Fixes');
+    if (!tab) return false;
+    out.rows = three(readSheetTable_(tab).rows);
+    out.seededFrom = 'the ' + label + ' report';
+    return true;
+  });
+  return out;
+}
+
+/** Rule 5.5a: writes the whole wo_sku_fixes list (header + rows, as text), creating the tab if needed. */
+function writeWoFixes_(hub, fixes, rows) {
+  var cfg = CONFIG.OPS_HUB.woFixes;
+  var sheet = fixes.sheet || hub.insertSheet(cfg.sheetName);
+  fixes.sheet = sheet;
+  var all = [cfg.headers.slice()].concat(rows.map(function (r) { return [textCell_(r[0]), cleanSku_(r[1]), textCell_(r[2])]; }));
+  var before = sheet.getLastRow();
+  ensureSize_(sheet, Math.max(all.length, before), 3);
+  if (before > all.length) sheet.getRange(all.length + 1, 1, before - all.length, 3).clearContent();
+  sheet.getRange(1, 1, all.length, 3).setNumberFormat('@');
+  sheet.getRange(1, 1, all.length, 3).setValues(all);
+}
+
+// -----------------------------------------------------------------------------
+// Step 2 — Generate EOM Report (Rules 2–12)
+// -----------------------------------------------------------------------------
+
+/**
+ * Builds (or rebuilds) the month's report in the month folder: Ops Hub's numbers for the month are copied in and
+ * locked (Rule 4 / 9 / 11), the raw reports are copied in for reference, typed tabs are kept. Only READS Ops Hub.
+ * Returns the report's link.
+ */
+function generateEOMReportFor_(monthText) {
+  var startedAt = new Date();
+  var m = resolveMonth_(monthText, startedAt);
+  var tabs = tabNames_(m);
+  var f = monthFiles_(m, ['ADS', 'LEDGER', 'BIZ', 'SHOPIFY', 'WORK_ORDERS']);
+  log_('Generating ' + workbookName_(m) + ' from Ops Hub and folder "' + m.label + '"');
+
+  // Read and check every raw file and the Ops Hub BEFORE changing anything in Drive (Rule 1.4).
+  var shopifyTable = tableFromEntry_(f.e.SHOPIFY, 'Shopify order export');
   checkShopifyOrdersContiguous_(shopifyTable);
   shopifyLinesCounted_(shopifyTable);                      // Rule 5.4a: status columns present
-  var ledgerTable = tableFromEntry_(e.LEDGER, 'Amazon Inventory Ledger');
+  var ledgerTable = tableFromEntry_(f.e.LEDGER, 'Amazon Inventory Ledger');
   checkLedgerCoversMonth_(ledgerTable, m);
   var inputs = {
     month: m,
     todayStr: Utilities.formatDate(startedAt, Session.getScriptTimeZone(), 'yyyy-MM-dd'),
     builtAt: Utilities.formatDate(startedAt, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm') + ' by ' + Session.getActiveUser().getEmail(),
-    ads: tableFromEntry_(e.ADS, 'ADS stock snapshot'),
+    ads: tableFromEntry_(f.e.ADS, 'ADS stock snapshot'),
     ledger: ledgerTable,
-    biz: tableFromEntry_(e.BIZ, 'Amazon Business Report'),
+    biz: tableFromEntry_(f.e.BIZ, 'Amazon Business Report'),
     shopify: shopifyTable,
-    workOrders: parseWorkOrdersHtml_(e.WORK_ORDERS.text, m),
-    ignoredFiles: scan.ignored
+    workOrders: parseWorkOrdersHtml_(f.e.WORK_ORDERS.text, m),
+    ignoredFiles: f.scan.ignored
   };
 
-  // Rule 4: starting balances (also checked before anything is written).
-  var start = findStartingBalances_(parent, monthFolder, m, looseAdsStart);
-  inputs.adsStart = start.ads;
-  inputs.amzPrevEnd = start.amzPrevEnd;
+  var hub = openOpsHub_(), tz = hub.getSpreadsheetTimeZone(), W = CONFIG.OPS_HUB_WRITE;
   inputs.bomValues = readBomSource_();
-
-  // Rule 5.6: shipments out of ADS from the Ops Hub logs (this month's rows, by Ship Date).
-  var hub = SpreadsheetApp.openById(CONFIG.OPS_HUB.spreadsheetId);
   inputs.manualLog = parseOpsLog_(readOpsLogValues_(hub, CONFIG.OPS_HUB.manualLog), 'manual', m);
   inputs.amzLog = parseOpsLog_(readOpsLogValues_(hub, CONFIG.OPS_HUB.amzLog), 'amz', m);
+  var fixSheet = sheetByName_(hub, CONFIG.OPS_HUB.woFixes.sheetName);
+  inputs.woFixes = fixSheet ? readSheetTable_(fixSheet).rows : [];
+  var hv = {};
+  ['inventoryEom', 'sellThru', 'woLog'].forEach(function (k) {
+    var sh = sheetByName_(hub, W[k].sheetName);
+    if (!sh) throw new Error('Ops Hub 2.0 has no tab named "' + W[k].sheetName + '". Nothing was generated.');
+    hv[k] = datesToSerials_(sh.getDataRange().getValues(), tz);
+  });
+  inputs.hub = readHubMonth_(hv, m); // stops here if Write month to Ops Hub hasn't been run for the month
 
   // Rule 13.2: Shopify goes through the standalone Sell Thru file.
-  renameEntry_(e.SHOPIFY, tabs.shopify);
-  var sell = ensureSellThru_(monthFolder, m, e.SHOPIFY, false);
+  renameEntry_(f.e.SHOPIFY, tabs.shopify);
+  var sell = ensureSellThru_(f.monthFolder, m, f.e.SHOPIFY, false);
   inputs.shopifyCopyFrom = { spreadsheetId: sell.id, sheetName: 'Order Export' };
-  start.copyAdsStartFile();
 
-  // Workbooks: this month's (create if new) and last month's (for carried tabs).
-  var wbFile = fileByName_(monthFolder, workbookName_(m));
-  var ss = wbFile ? SpreadsheetApp.open(wbFile) : createSpreadsheetIn_(monthFolder, workbookName_(m));
-  var prevFolder = subfolder_(parent, m.prevLabel, false);
+  // The report: this month's (create if new); last month's only for carrying Prepaid (Rule 7.3).
+  var wbFile = fileByName_(f.monthFolder, workbookName_(m));
+  var ss = wbFile ? SpreadsheetApp.open(wbFile) : createSpreadsheetIn_(f.monthFolder, workbookName_(m));
+  var prevFolder = subfolder_(f.parent, m.prevLabel, false);
   var prevFile = prevFolder ? fileByName_(prevFolder, CONFIG.WORKBOOK_NAME_PREFIX + m.prevLabel) : null;
   var prevSs = prevFile ? SpreadsheetApp.open(prevFile) : null;
-  var bootSs = null;
-  function boot() { return bootSs || (bootSs = SpreadsheetApp.openById(CONFIG.BOOTSTRAP_WORKBOOK_ID)); }
 
-  // Rule 6.2 / 7.3: COGS and Prepaid — keep this month's, else carry from last month, else first-run workbook.
   // Rule 6.2: COGS is typed by hand each month — this month's tab if it exists, else created blank (never carried).
   var cogsSheet = sheetByName_(ss, tabs.cogs);
   inputs.cogs = cogsSheet ? readSheetTable_(cogsSheet, CONFIG.COGS_COLUMNS.key) : null;
-  var prepaidSrc = carriedTab_(ss, prevSs, boot, tabs.prepaid, null, true);
+  var prepaidSrc = carriedTab_(ss, prevSs, tabs.prepaid);
   inputs.prepaid = prepaidSrc ? prepaidSrc.table : null;
   inputs.copyFrom = { prepaid: prepaidSrc ? prepaidSrc.copyFrom : null };
-
-  // Rule 6.3: Amazon SKU map — this month's, else last month's.
-  var mapSheet = sheetByName_(ss, tabs.skuMap) || (prevSs && sheetByName_(prevSs, tabs.skuMap));
-  inputs.skuMapExisting = mapSheet ? readSheetTable_(mapSheet).rows : [];
-  // Rule 5.5a: work-order SKU fixes — this month's, else last month's.
-  var fixSheet = sheetByName_(ss, tabs.woFixes) || (prevSs && sheetByName_(prevSs, tabs.woFixes));
-  inputs.woFixesExisting = fixSheet ? readSheetTable_(fixSheet).rows : [];
-
-  // Rule 7: manual tabs (never overwritten). MFG Counts: this month's tab if it exists (null = create it, pre-filled).
-  var countsSheet = sheetByName_(ss, tabs.mfgInv);
-  inputs.mfgInv = countsSheet ? rowsOf_(countsSheet) : null;
+  // Rule 7: typed tabs (never overwritten).
   inputs.adsReceipts = rowsOf_(sheetByName_(ss, tabs.adsReceipts));
-  // Rule 4.3 / 4.4: MFG starting balances = last month's MFG Counts; first run = the first-run workbook's MFG rows.
-  var prevCountsName = 'MFG Counts ' + m.prevEndStr;
-  var prevMfg = prevSs && sheetByName_(prevSs, prevCountsName);
-  var mfgStartSource;
-  if (prevMfg) {
-    inputs.mfgStart = rowsOf_(prevMfg).map(function (r) { return [r[0], r[1], r[2]]; });
-    inputs.mfgStartFromPrev = true;
-    mfgStartSource = 'Copied from "' + prevCountsName + '" (EOM Qty) in the ' + m.prevLabel + ' workbook.';
-  } else if (!prevSs) {
-    var bm = CONFIG.BOOTSTRAP_MFG;
-    var bootVar = sheetByName_(boot(), bm.tab);
-    if (!bootVar) throw new Error('First run: the first-run workbook has no "' + bm.tab + '" tab to take last month\'s MFG balances from.');
-    inputs.mfgStart = mfgStartFromBootstrap_(bootVar.getDataRange().getValues());
-    inputs.mfgStartFromPrev = true;
-    mfgStartSource = 'First run: the "' + bm.categoryValue + '" rows of "' + bm.tab + '" in the first-run workbook (' + inputs.mfgStart.length + ' rows).';
-  } else {
-    throw new Error('The ' + m.prevLabel + ' workbook has no "' + prevCountsName + '" tab, so there are no MFG starting balances. Add that tab to last month\'s workbook (MFG | SKU | EOM Qty) and run again.');
-  }
-
+  inputs.mfgReceipts = rowsOf_(sheetByName_(ss, tabs.mfgReceipts));
   inputs.sources = {
-    startSources: start.sourceText,
-    shopifySource: '"' + sellThruName_(m) + '" in the month folder (' + (sell.reused ? 'reused — newer than the Shopify CSV' : 'rebuilt from the Shopify CSV this run') + ').',
-    mfgStartSource: mfgStartSource
+    shopifySource: '"' + sellThruName_(m) + '" in the month folder (' + (sell.reused ? 'reused — newer than the Shopify CSV' : 'rebuilt from the Shopify CSV this run') + ').'
   };
+  // Tabs this version doesn't make (e.g. MFG Counts from the old layout) are left alone and listed on Checks.
+  var made = tabOrder_(tabs).map(function (n) { return n.toLowerCase(); }).concat(['sheet1', '_building']);
+  inputs.extraTabs = ss.getSheets().map(function (sh) { return sh.getName(); }).filter(function (n) { return made.indexOf(n.toLowerCase()) < 0; });
 
   // Build every tab in memory (pure), check formulas are Excel-safe, then write.
   var wb = buildWorkbookModel_(inputs);
@@ -135,10 +276,10 @@ function buildEOMFor_(monthText) {
   writeWorkbook_(ss, wb);
 
   // Rule 2.3: rename raw files to their tab names (after a successful build).
-  renameEntry_(e.ADS, tabs.adsEnd);
-  renameEntry_(e.LEDGER, tabs.ledger);
-  renameEntry_(e.BIZ, tabs.biz);
-  renameEntry_(e.WORK_ORDERS, tabs.workOrders);
+  renameEntry_(f.e.ADS, tabs.adsEnd);
+  renameEntry_(f.e.LEDGER, tabs.ledger);
+  renameEntry_(f.e.BIZ, tabs.biz);
+  renameEntry_(f.e.WORK_ORDERS, tabs.workOrders);
 
   log_('Done in ' + Math.round((new Date() - startedAt) / 1000) + 's: ' + ss.getUrl());
   log_('Open the Checks tab first — anything marked FLAG needs attention.');
@@ -162,49 +303,37 @@ function shopifyOnlyFor_(monthText) {
   return url;
 }
 
-// -----------------------------------------------------------------------------
-// Rule 15: writeOpsHub
-// -----------------------------------------------------------------------------
-
 /**
- * Rule 15: reads this month's finished workbook (calculated values) and writes it into Ops Hub 2.0:
- * sku_matrix (new SKUs), wo_log (the month's kit lines), inventory_eom and sell_thru monthly (the month's column).
- * Everything is read and checked first; nothing is written if anything is wrong. Safe to run again.
+ * Rule 2: the month folder's files, recognized by their columns; exactly one of each type in `types` (Rule 2.1).
+ * A leftover Manual Orders file stops the run (Rule 2.5). Returns {parent, monthFolder, scan, e: {type: entry}}.
  */
-function writeOpsHubFor_(monthText) {
-  var m = resolveMonth_(monthText, new Date());
-  var tabs = tabNames_(m), W = CONFIG.OPS_HUB_WRITE;
-  var monthFolder = subfolder_(parentFolder_(), m.label, true);
-  var wbFile = fileByName_(monthFolder, workbookName_(m));
-  if (!wbFile) throw new Error('There is no "' + workbookName_(m) + '" in the "' + m.label + '" folder. Run buildEOM for ' + m.label + ' first, check it, then run writeOpsHub.');
-  var ss = SpreadsheetApp.open(wbFile);
-  function wbTab(name, optional) {
-    var s = sheetByName_(ss, name);
-    if (!s && !optional) throw new Error('The ' + m.label + ' workbook has no "' + name + '" tab. Run buildEOM for ' + m.label + ' again, then run writeOpsHub.');
-    return s ? s.getDataRange().getValues() : [];
+function monthFiles_(m, types) {
+  var parent = parentFolder_();
+  var monthFolder = subfolder_(parent, m.label, true);
+  var scan = scanFolder_(monthFolder, m);
+  if (scan.byType.MANUAL.length) {
+    // Rule 2.5: shipments out of ADS now come from the Ops Hub logs; a file as well would double count.
+    throw new Error('"' + scan.byType.MANUAL[0].file.getName() + '" in "' + m.label + '" is a Manual Orders file. Those are no longer used: ' +
+      'shipments out of ADS are read from Ops Hub "' + CONFIG.OPS_HUB.manualLog.sheetName + '" and "' + CONFIG.OPS_HUB.amzLog.sheetName +
+      '". Make sure they are there, then remove the file from the folder and run again.');
   }
-  var wbValues = { variance: wbTab(tabs.variance), outbound: wbTab(tabs.outbound), workOrders: wbTab(tabs.workOrders), skuList: wbTab(tabs.skuList, true) };
-
-  var hub = SpreadsheetApp.openById(W.spreadsheetId);
-  var tz = hub.getSpreadsheetTimeZone();
-  var sheets = {}, hubValues = {};
-  ['skuMatrix', 'woLog', 'inventoryEom', 'sellThru'].forEach(function (k) {
-    sheets[k] = sheetByName_(hub, W[k].sheetName);
-    if (!sheets[k]) throw new Error('Ops Hub 2.0 has no tab named "' + W[k].sheetName + '". Nothing was written.');
-    hubValues[k] = datesToSerials_(sheets[k].getDataRange().getValues(), tz);
-  });
-
-  var plan = planOpsHubWrite_(wbValues, hubValues, m); // stops here, before any write, if anything is wrong
-  applySkuMatrix_(sheets.skuMatrix, plan.skuMatrix);
-  applyWoLog_(sheets.woLog, plan.woLog, hubValues.woLog[0]);
-  applyMonthColumn_(sheets.inventoryEom, plan.inventoryEom);
-  applyMonthColumn_(sheets.sellThru, plan.sellThru);
-  SpreadsheetApp.flush();
-  var lines = opsHubSummary_(plan);
-  lines.forEach(log_);
-  log_('Done: ' + hub.getUrl());
-  return lines.join('\n');
+  requireOneOfEach_(scan, types, m.label);
+  var e = {};
+  Object.keys(scan.byType).forEach(function (k) { if (scan.byType[k].length === 1) e[k] = scan.byType[k][0]; });
+  return { parent: parent, monthFolder: monthFolder, scan: scan, e: e };
 }
+
+function openOpsHub_() {
+  try {
+    return SpreadsheetApp.openById(CONFIG.OPS_HUB.spreadsheetId);
+  } catch (err) {
+    throw new Error('Could not open Ops Hub 2.0 as ' + Session.getActiveUser().getEmail() + '. Run this from an account that can edit Ops Hub 2.0. (' + err.message + ')');
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Rule 15: applying the Ops Hub write plan
+// -----------------------------------------------------------------------------
 
 /** Dates read from a sheet become date numbers (in the sheet's time zone), so they compare exactly. */
 function datesToSerials_(values, tz) {
@@ -281,7 +410,16 @@ function applyMonthColumn_(sheet, plan) {
       else sheet.getRange(nr.row, p[0]).setNumberFormat('@').setValues([[p[1]]]);
     });
   });
-  if (plan.colValues.length) sheet.getRange(plan.firstRow, plan.col, plan.colValues.length, 1).setValues(plan.colValues);
+  // Rule 15.2: write only the cells the plan sets — null = a row typed by hand (or a blank row): leave it alone.
+  var start = null, cv = plan.colValues;
+  for (var i = 0; i <= cv.length; i++) {
+    var v = i < cv.length ? cv[i][0] : null;
+    if (v !== null && start === null) start = i;
+    if (v === null && start !== null) {
+      sheet.getRange(plan.firstRow + start, plan.col, i - start, 1).setValues(cv.slice(start, i));
+      start = null;
+    }
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -345,143 +483,6 @@ function ensureSellThru_(monthFolder, m, entry, force) {
 }
 
 // -----------------------------------------------------------------------------
-// Rule 4: starting balances
-// -----------------------------------------------------------------------------
-
-/**
- * Rule 2.2a: on a first run (no last-month ADS ending file, no ADS snapshot in "Starting Balances"),
- * two ADS snapshots in the month folder are allowed: the one identical to the first-run workbook's
- * ADS tab is last month's ending. It is removed from `scan` and returned; otherwise returns null.
- */
-function splitFirstRunAds_(parent, monthFolder, m, scan) {
-  var list = scan.byType.ADS;
-  if (list.length !== 2) return null;
-  var prevFolder = subfolder_(parent, m.prevLabel, false);
-  if (prevFolder && monthFileEntry_(prevFolder, 'ADS Ending Balance ' + m.prevEndStr, true)) return null;
-  if (monthFileEntry_(monthFolder, tabNames_(m).adsStart, true)) return null;
-  var bootFolder = subfolder_(monthFolder, CONFIG.STARTING_BALANCES_SUBFOLDER, false);
-  if (bootFolder && scanFolder_(bootFolder, m).byType.ADS.length) return null;
-  var refLabel = 'the "' + CONFIG.BOOTSTRAP_ADS_TAB + '" tab of the first-run workbook';
-  var book = SpreadsheetApp.openById(CONFIG.BOOTSTRAP_WORKBOOK_ID);
-  var sheet = sheetByName_(book, CONFIG.BOOTSTRAP_ADS_TAB);
-  if (!sheet) throw new Error('Two ADS stock snapshots are in "' + m.label + '" and the first-run workbook has no "' + CONFIG.BOOTSTRAP_ADS_TAB +
-    '" tab to tell them apart. Put last month\'s snapshot in a subfolder named "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '".');
-  var ref = adsTableFromSheetValues_(sheet.getDataRange().getValues(), refLabel);
-  var tables = list.map(function (e) { return tableFromEntry_(e, 'ADS stock snapshot "' + e.file.getName() + '"'); });
-  var i = matchingAdsSnapshot_(tables, ref, list.map(function (e) { return '"' + e.file.getName() + '"'; }), refLabel);
-  var startEntry = list[i];
-  scan.byType.ADS = list.filter(function (_, j) { return j !== i; });
-  log_('  "' + startEntry.file.getName() + '" matches ' + refLabel + ' — used as the ' + m.prevEndMDY + ' ADS starting balance.');
-  return startEntry;
-}
-
-function findStartingBalances_(parent, monthFolder, m, looseAdsStart) {
-  var tabs = tabNames_(m);
-  var prevFolder = subfolder_(parent, m.prevLabel, false);
-  var bootFolder = subfolder_(monthFolder, CONFIG.STARTING_BALANCES_SUBFOLDER, false);
-  var boot = bootFolder ? scanFolder_(bootFolder, m) : null;
-  var notes = [];
-
-  // ADS (Rule 4.1). Last month's file is found by name with or without ".csv", or as a Google Sheet (Rule 2.3).
-  var prevAdsBase = 'ADS Ending Balance ' + m.prevEndStr;
-  var adsFound = prevFolder ? monthFileEntry_(prevFolder, prevAdsBase) : null;
-  var startHere = adsFound ? null : monthFileEntry_(monthFolder, tabs.adsStart); // identified on an earlier run (rule 2.2a)
-  var adsEntry, renameLoose = false;
-  if (adsFound) {
-    if (adsFound.type !== 'ADS') throw new Error('"' + adsFound.file.getName() + '" in the ' + m.prevLabel + ' folder is not an ADS stock snapshot.');
-    adsEntry = adsFound;
-    notes.push('ADS: "' + adsFound.file.getName() + '" from the ' + m.prevLabel + ' folder');
-  } else if (startHere) {
-    if (startHere.type !== 'ADS') throw new Error('"' + startHere.file.getName() + '" in the ' + m.label + ' folder is not an ADS stock snapshot.');
-    adsEntry = startHere;
-    notes.push('ADS: "' + startHere.file.getName() + '" in the ' + m.label + ' folder');
-  } else if (looseAdsStart) {
-    adsEntry = looseAdsStart;
-    renameLoose = true;
-    notes.push('ADS: "' + looseAdsStart.file.getName() + '" from the ' + m.label + ' folder — it matches the "' + CONFIG.BOOTSTRAP_ADS_TAB +
-      '" tab of the first-run workbook (first run; renamed "' + tabs.adsStart + '")');
-  } else if (boot && boot.byType.ADS.length === 1) {
-    adsEntry = boot.byType.ADS[0];
-    notes.push('ADS: "' + adsEntry.file.getName() + '" from the "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder (first run)');
-  } else {
-    throw new Error('Could not find last month\'s ADS ending snapshot. It should be "' + prevAdsBase + '.csv" in the "' + m.prevLabel +
-      '" folder (made automatically when ' + m.prevLabel + ' was built). First run only: put last month\'s ADS snapshot CSV in a subfolder named "' +
-      CONFIG.STARTING_BALANCES_SUBFOLDER + '" inside "' + m.label + '".' + (boot && boot.byType.ADS.length > 1 ? ' (That subfolder has more than one ADS snapshot.)' : ''));
-  }
-
-  // Amazon (Rule 4.2): Beginning comes from THIS month's ledger (1st-of-month rows), so nothing is required here.
-  // Rule 4.2a: if last month's ledger can be found, it is used only for the tie-out on Checks (never stops the run).
-  var prevLedgerBase = 'AMZ Inventory Ledger ' + m.prevEndStr;
-  var amzPrev = { rows: null, source: null, problem: null };
-  var ledEntry = null, ledLabel = null;
-  try {
-    var ledFound = prevFolder ? monthFileEntry_(prevFolder, prevLedgerBase) : null;
-    if (ledFound) {
-      ledEntry = ledFound;
-      ledLabel = '"' + ledFound.file.getName() + '" in the ' + m.prevLabel + ' folder';
-    } else if (boot && boot.byType.LEDGER.length === 1) {
-      ledEntry = boot.byType.LEDGER[0];
-      ledEntry.type = 'LEDGER';
-      ledLabel = '"' + ledEntry.file.getName() + '" in the "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder';
-    } else if (boot && boot.byType.LEDGER.length > 1) {
-      amzPrev.problem = 'The "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder has more than one Amazon ledger — keep only the one ending ' + m.prevEndMDY + '.';
-    } else {
-      amzPrev.source = 'looked for "' + prevLedgerBase + '.csv" in the ' + m.prevLabel + ' folder';
-    }
-    if (ledEntry) {
-      amzPrev.source = ledLabel;
-      if (ledEntry.type !== 'LEDGER') throw new Error(ledLabel + ' is not an Amazon Inventory Ledger.');
-      amzPrev.rows = ledgerLastDateRows_(tableFromEntry_(ledEntry, 'last month\'s Amazon ledger'), m.prevEndSerial, ledLabel);
-    }
-  } catch (err) {
-    amzPrev.rows = null;
-    amzPrev.problem = err.message + ' Fix or remove that file and run again to get the tie-out.';
-  }
-  notes.push('Amazon: ' + serialToMDY_(m.firstSerial) + ' rows of this month\'s Amazon Inventory Ledger (Starting Warehouse Balance)');
-
-  return {
-    ads: tableFromEntry_(adsEntry, 'starting ADS snapshot'), amzPrevEnd: amzPrev, sourceText: notes.join('; ') + '.',
-    // Rule 4.1: a copy of the starting ADS snapshot goes into this month's folder (done after all checks pass).
-    copyAdsStartFile: function () {
-      if (renameLoose) { renameEntry_(adsEntry, tabs.adsStart); return; } // rule 2.2a: it is already in the month folder
-      var isSheet = adsEntry.file.getMimeType() === MimeType.GOOGLE_SHEETS;
-      if (monthFileEntry_(monthFolder, tabs.adsStart, true)) return;
-      adsEntry.file.makeCopy(tabs.adsStart + (isSheet ? '' : '.csv'), monthFolder);
-    }
-  };
-}
-
-/**
- * Rule 2.3: a renamed raw file, found by its base name whether it ends in ".csv" (any extension) or
- * was saved as a Google Sheet. Returns {file, type, text|values} or null. Two matches stop the run.
- * nameOnly = just check it exists (don't read it).
- */
-function monthFileEntry_(folder, base, nameOnly) {
-  var found = [];
-  var it = folder.getFiles();
-  while (it.hasNext()) {
-    var f = it.next(), n = f.getName();
-    if (f.isTrashed()) continue;
-    if (n === base || (n.indexOf(base + '.') === 0 && /^\.[A-Za-z0-9]+$/.test(n.slice(base.length)))) found.push(f);
-  }
-  if (found.length > 1) {
-    throw new Error('There are ' + found.length + ' files named "' + base + '" in "' + folder.getName() + '": ' +
-      found.map(function (f) { return '"' + f.getName() + '"'; }).join(', ') + '. Keep only one.');
-  }
-  if (!found.length) return null;
-  var file = found[0], entry = { file: file };
-  if (nameOnly) return entry;
-  if (file.getMimeType() === MimeType.GOOGLE_SHEETS) {
-    entry.values = SpreadsheetApp.open(file).getSheets()[0].getDataRange().getValues();
-    entry.type = identifyHeader_(entry.values[0] || []);
-  } else {
-    entry.text = file.getBlob().getDataAsString();
-    entry.type = identifyText_(entry.text);
-  }
-  return entry;
-}
-
-// -----------------------------------------------------------------------------
 // Drive helpers
 // -----------------------------------------------------------------------------
 
@@ -527,6 +528,7 @@ function scanFolder_(folder, m) {
   while (it.hasNext()) {
     var file = it.next();
     var name = file.getName(), mime = file.getMimeType();
+    // "ADS Starting Balance …" files were copied in by the old layout (before 2026-11-16): not this month's snapshot.
     if (file.isTrashed() || skip.indexOf(name) >= 0 || name.indexOf('ADS Starting Balance ') === 0) continue;
     var type = null, entry = { file: file };
     if (mime === MimeType.GOOGLE_SHEETS) {
@@ -550,7 +552,7 @@ function requireOneOfEach_(scan, types, folderName) {
     var list = scan.byType[t], label = CONFIG.FILE_TYPES[t].label;
     if (!list.length) problems.push('missing: ' + label);
     if (list.length > 1) problems.push('more than one ' + label + ': ' + list.map(function (x) { return '"' + x.file.getName() + '"'; }).join(', ') +
-      (t === 'LEDGER' || t === 'ADS' ? ' (last month\'s file belongs in the "' + CONFIG.STARTING_BALANCES_SUBFOLDER + '" subfolder)' : ''));
+      (t === 'LEDGER' || t === 'ADS' ? ' (keep only this month\'s — last month\'s numbers come from Ops Hub)' : ''));
   });
   if (problems.length) throw new Error('Folder "' + folderName + '": ' + problems.join('; ') + '.');
 }
@@ -581,22 +583,12 @@ function readBomSource_() {
   return sheet.getRange(CONFIG.BOM_SOURCE.columns).getValues();
 }
 
-/**
- * Rule 6.2 / 7.3: a carried tab. This month's copy wins; otherwise last month's; otherwise the
- * first-run workbook. Returns {table, copyFrom} (copyFrom null when the tab already exists).
- */
-function carriedTab_(ss, prevSs, bootFn, name, keyHeader, optional) {
+/** Rule 7.3: a carried tab — this month's copy wins, otherwise last month's (copied in), otherwise null. */
+function carriedTab_(ss, prevSs, name) {
   var here = sheetByName_(ss, name);
-  if (here) return { table: readSheetTable_(here, keyHeader), copyFrom: null };
-  // Last month first; the first-run workbook is only opened when last month doesn't have the tab.
-  var sources = [function () { return prevSs; }, bootFn];
-  for (var i = 0; i < sources.length; i++) {
-    var book = sources[i]();
-    var s = book && sheetByName_(book, name);
-    if (s) return { table: readSheetTable_(s, keyHeader), copyFrom: { spreadsheetId: book.getId(), sheetName: s.getName() } };
-  }
-  if (optional) return null;
-  throw new Error('Could not find a "' + name + '" tab in this month\'s workbook, last month\'s workbook or the first-run workbook.');
+  if (here) return { table: readSheetTable_(here), copyFrom: null };
+  var s = prevSs && sheetByName_(prevSs, name);
+  return s ? { table: readSheetTable_(s), copyFrom: { spreadsheetId: prevSs.getId(), sheetName: s.getName() } } : null;
 }
 
 function rowsOf_(sheet) {

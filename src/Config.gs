@@ -20,9 +20,6 @@ var CONFIG = {
   WORKBOOK_NAME_PREFIX: 'DAIRYPILL_EOM COGS - ',
   // Rule 13.1: the standalone Shopify file is this prefix + "Sep 2026".
   SELL_THRU_NAME_PREFIX: 'DairyPill Sell Thru ',
-  // Rule 2.2 / 4.4: first-run-only subfolder with last month's ADS snapshot and
-  // an Amazon ledger that ends on last month's final day.
-  STARTING_BALANCES_SUBFOLDER: 'Starting Balances',
 
   // ---- Rule 6.1: where the BOM is copied from --------------------------------
   BOM_SOURCE: {
@@ -32,7 +29,7 @@ var CONFIG = {
     headers: { parent: 'Parent SKU', parentDesc: 'Parent Desc', child: 'Child SKU', childDesc: 'Child Desc', qty: 'Qty' }
   },
 
-  // ---- Rule 5.6: shipments out of ADS, typed in Ops Hub 2.0 before running buildEOM -
+  // ---- Rule 5.6: shipments out of ADS, typed in Ops Hub 2.0 before running ---------------
   // Read straight from these tabs (no file in the month folder). A row counts in the month of its
   // Ship Date; a blank Ship Date = not shipped yet (not counted, listed on Checks).
   OPS_HUB: {
@@ -45,15 +42,19 @@ var CONFIG = {
     // Amazon Store Number | Order Date (Date Labels are Received) | Ship Date (F, added 2026-11-13). Found by name.
     amzLog: { sheetName: 'amz_log', columns: 'A:F',
       headers: { order: 'ADS Order Number', amazon: 'Amazon Store Number', sku: 'SKU', qty: 'Quantity',
-                 orderDate: 'Order Date Date Labels are Received', shipDate: 'Ship Date' } }
+                 orderDate: 'Order Date Date Labels are Received', shipDate: 'Ship Date' } },
+    // Rule 5.5a: our SKU for work-order lines whose Job is blank or words. One list for every month (moved here from
+    // the report on 2026-11-16, because the Ops Hub is now written first). Created by "Write month to Ops Hub" if missing.
+    woFixes: { sheetName: 'wo_sku_fixes', headers: ['Reported as (Job, or Description when Job is blank)', 'Our SKU', 'Note'] }
   },
 
-  // ---- Rule 15: writeOpsHub() copies the finished month into these Ops Hub 2.0 tabs ----
+  // ---- Rule 15: "Write month to Ops Hub" fills these Ops Hub 2.0 tabs from the month's files ----
   // Columns are found by their header names; nothing else on the tabs is touched.
   OPS_HUB_WRITE: {
     spreadsheetId: '1rCXpffesBqnfocXslxqb9VzuFCQd60X5IV_YPZTkEtE', // DairyPill Ops Hub 2.0
-    // Rule 15.2: one row per Location + SKU, one column per month (header = month-end date).
-    inventoryEom: { sheetName: 'inventory_eom', headerRow: 2, group: 'Location', sku: 'SKU', code: 'Code' },
+    // Rule 15.2: one row per Location + SKU, one column per month (header = month-end date). The script fills only the
+    // `ownedGroups` rows (it has their reports); every other Location (the manufacturers) is typed by hand (owner, 2026-11-16).
+    inventoryEom: { sheetName: 'inventory_eom', headerRow: 2, group: 'Location', sku: 'SKU', code: 'Code', ownedGroups: ['ADS', 'Amazon'] },
     // Rule 15.3: one row per Channel + SKU, one column per month (header = month-end date).
     sellThru: { sheetName: 'sell_thru monthly', headerRow: 5, group: 'Channel', sku: 'SKU', code: 'Code', desc: 'Description' },
     // Rule 15.4: one row per kit line. Only these four columns are written; Month / Channel are formulas on the tab.
@@ -61,16 +62,6 @@ var CONFIG = {
     // Rule 15.5: SKUs not on sku_matrix are added with this Status.
     skuMatrix: { sheetName: 'sku_matrix', headers: { sku: 'SKU', desc: 'Description', status: 'Status' }, newStatus: 'NEEDS VERIFICATION' }
   },
-
-  // ---- Rule 6.2 / 7.3: first-run source for COGS and Prepaid -----------------
-  // Used only when there is no previous month's workbook to carry them from.
-  BOOTSTRAP_WORKBOOK_ID: '1vFNFEbUKyoTlj21PrKWjk_2Yfdhionh7wkkSF2J3pAw', // Sept 2026 (hand-built)
-  // Rule 2.2a: the tab in that workbook holding its ADS ending snapshot. On a first run with two ADS
-  // snapshots in the month folder, the one matching this tab exactly is last month's ending.
-  BOOTSTRAP_ADS_TAB: 'ADS 930',
-  // Rule 4.4: first run only — last month's MFG ending balances = the Raw Material rows of that workbook's Variance Overview.
-  BOOTSTRAP_MFG: { tab: 'Variance Overview', mfg: 'Location', sku: 'SKU', category: 'Categorization', qty: 'Actual Ending Inventory',
-                   categoryValue: 'Raw Material - Component' },
 
   // ---- Rule 6.2: which COGS columns the summaries read ------------------------
   // Rule 6.2: COGS is typed by hand every month. The script creates it with these headers, one row per SKU,
@@ -143,23 +134,19 @@ var CONFIG = {
   WORK_ORDER_FEE_JOBS: ['Setup Fee'],
 
   // ---- Rule 9: locations, their labels and categorization ---------------------
+  // ADS and Amazon match the Location column of Ops Hub inventory_eom. Every other Location there is a manufacturer (MFG).
   LOCATIONS: {
     ADS: { label: 'ADS',    categorization: 'Ending Inventory' },
     AMZ: { label: 'Amazon', categorization: 'Ending Inventory' },
-    MFG: { label: 'MFG',    categorization: 'Raw Material - Component' } // one section; each row's MFG comes from the MFG Counts tab
+    MFG: { label: 'MFG',    categorization: 'Raw Material - Component' } // one section; each row's Location is the manufacturer
   },
 
-  // ---- Rule 7: manual-entry tab headers ---------------------------------------
+  // ---- Rule 7: manual-entry tab headers (typed in the report, never overwritten) -
   MANUAL_TABS: {
-    MFG_COUNTS:    ['MFG', 'SKU', 'EOM Qty', 'Received Qty'], // Rule 7.1: Received Qty optional (blank = 0)
-    MFG_STARTING:  ['MFG', 'SKU', 'EOM Qty'],
     ADS_RECEIPTS:  ['PO Number', 'SKU', 'Qty'],
+    MFG_RECEIPTS:  ['MFG', 'SKU', 'Qty'], // Rule 7.2a: received at a manufacturer this month (optional, blank = 0)
     PREPAID:       ['Prepaid POs', 'Invoice', 'SKU', 'Description', 'Quantity', 'Unit Cost', 'Total Cost', 'Amount Paid']
   },
-
-  // Rule 9.5: rows in the MFG section of Variance Overview / Inventory Valuation. Row k mirrors row k of the
-  // MFG Counts tab; empty rows stay blank. More rows on MFG Counts than this is a FLAG (raise it here).
-  MFG_ROWS: 50,
 
   // Text shown in place of a number when a SKU has no COGS row (Rule 12.1).
   NO_COST_TEXT: 'NO COST',

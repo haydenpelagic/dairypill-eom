@@ -1,9 +1,11 @@
 'use strict';
-// Rule 15: writeOpsHub planning (pure). What gets written to inventory_eom, sell_thru monthly, wo_log and
-// sku_matrix, worked out by hand on small made-up tabs.
+// Rule 15: "Write month to Ops Hub" (pure parts). The numbers worked out from the month's files, and what gets
+// written to inventory_eom, sell_thru monthly, wo_log and sku_matrix — checked by hand on small made-up tabs.
+// Also the reading side (Generate EOM Report locks Ops Hub's numbers into the report).
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadLogic } = require('./load');
+const { sampleInputs, sampleHub } = require('./fixtures/sampleMonth');
 
 const L = loadLogic();
 const plain = (x) => JSON.parse(JSON.stringify(x));
@@ -22,14 +24,13 @@ const invTab = () => [
   ['VitaPros70003', 'VitaPros', '70003', 0, 300]
 ];
 
-test('Rule 15.2: new month column after last month; every row filled (0 when none); new Location + SKU added at the bottom', () => {
+test('Rule 15.2: new month column after last month; ADS + Amazon rows filled (0 when none); manufacturer rows left blank; new Location + SKU added at the bottom', () => {
   const data = [
     { group: 'ADS', sku: '10030', qty: 309 },
     { group: 'ads', sku: '20001', qty: 6000 },     // capitals don't matter
     { group: 'ADS', sku: '20001', qty: 292 },      // repeated pair is added up
     { group: 'Amazon', sku: 'A0180', qty: 595 },   // not on the tab → new row
-    { group: 'VitaQuest', sku: '70001', qty: 0 },  // not on the tab but 0 → no row
-    { group: 'VitaQuest', sku: '70002', qty: 55000 }
+    { group: 'Amazon', sku: 'A0090', qty: 0 }      // not on the tab but 0 → no row
   ];
   const p = L.planMonthColumn_(invTab(), W.inventoryEom, oct, data, { A0180: 'Amz Kit - 180ct Refill' });
   assert.equal(p.col, 6, 'column F, right after Sep 2026 (E)');
@@ -37,22 +38,32 @@ test('Rule 15.2: new month column after last month; every row filled (0 when non
   assert.equal(p.copyFromCol, 5);
   assert.equal(p.headerSerial, OCT);
   assert.equal(p.firstRow, 3);
-  // rows 3..7 existing (row 5 blank, kept blank), rows 8..9 new
-  assert.deepEqual(plain(p.colValues), [[309], [6292], [''], [0], [0], [595], [55000]]);
-  assert.deepEqual(plain(p.newRows.map((r) => [r.row, r.group, r.sku, r.code])), [[8, 'Amazon', 'A0180', 'AmazonA0180'], [9, 'VitaQuest', '70002', 'VitaQuest70002']]);
+  // rows 3..7 existing (row 5 blank; row 7 VitaPros = typed by hand → blank, not September's 300), row 8 new
+  assert.deepEqual(plain(p.colValues), [[309], [6292], [''], [0], [''], [595]]);
+  assert.deepEqual(plain(p.newRows.map((r) => [r.row, r.group, r.sku, r.code])), [[8, 'Amazon', 'A0180', 'AmazonA0180']]);
   assert.equal(p.templateRow, 7);
   assert.deepEqual([p.groupCol, p.skuCol, p.codeCol, p.descCol], [2, 3, 1, null]);
-  assert.equal(p.updated, 4);
+  assert.equal(p.updated, 3);
+  assert.deepEqual(plain(p.handRows), [{ group: 'VitaPros', sku: '70003', blank: true }]);
+  assert.throws(() => L.planMonthColumn_(invTab(), W.inventoryEom, oct, [{ group: 'VitaQuest', sku: '70001', qty: 1 }], {}),
+    /only writes ADS and Amazon rows, not "VitaQuest"/);
 });
 
-test('Rule 15.2: running again for the same month replaces that column in place (no new column)', () => {
+test('Rule 15.2: running again for the same month replaces the ADS / Amazon cells in place; manufacturer cells typed by hand are not touched', () => {
   const tab = invTab();
-  tab[1].push(OCT); tab[2].push(1); tab[3].push(2); tab[5].push(3); tab[6].push(4);
+  tab[1].push(OCT); tab[2].push(1); tab[3].push(2); tab[5].push(3); tab[6].push(812); // VitaPros Oct typed by hand: 812
   const p = L.planMonthColumn_(tab, W.inventoryEom, oct, [{ group: 'ADS', sku: '10030', qty: 5 }], {});
   assert.equal(p.col, 6);
   assert.equal(p.isNew, false);
-  assert.deepEqual(plain(p.colValues), [[5], [0], [''], [0], [0]]);
+  assert.deepEqual(plain(p.colValues), [[5], [0], [null], [0], [null]], 'null = leave the cell alone (blank row, VitaPros)');
   assert.equal(p.added, 0);
+  assert.deepEqual(plain(p.handRows), [{ group: 'VitaPros', sku: '70003', blank: false }]);
+  const lines = L.opsHubSummary_({ month: oct, inventoryEom: p, sellThru: Object.assign({}, p, { handRows: [] }), woLog: { added: 0, changed: false }, skuMatrix: { rows: [] } });
+  assert.match(lines[1], /Manufacturer rows are typed by hand and were not touched \(1\)\. All have a Oct 2026 count\./);
+  tab[6][5] = '';
+  const blank = L.planMonthColumn_(tab, W.inventoryEom, oct, [], {});
+  const lines2 = L.opsHubSummary_({ month: oct, inventoryEom: blank, sellThru: Object.assign({}, blank, { handRows: [] }), woLog: { added: 0, changed: false }, skuMatrix: { rows: [] } });
+  assert.match(lines2[1], /Still blank for Oct 2026: VitaPros 70003 — type each count in column F before Generate EOM Report/);
 });
 
 test('Rule 15.2: months stay in order — a missing last month, a later month, or a busy next column stops the run', () => {
@@ -89,46 +100,64 @@ test('Rule 15.3: sell_thru — Channel + SKU rows filled from Outbound; new pair
   assert.deepEqual([p.codeCol, p.descCol, p.templateRow], [2, 4, 7]);
 });
 
-// Outbound Summary, calculated values (current layout with Description, and the older one without)
-const outbound = (withDesc) => {
-  const pre = withDesc ? ['', '', ''] : ['', ''];
-  const h = withDesc ? ['SKU', 'Description', 'Avg Cost / Unit'] : ['SKU', 'Avg Cost / Unit'];
-  const groups = ['DTC', 'Marketing', 'CX', 'TikTok', 'Samples', 'Amazon', 'All Channels'];
-  const row = (sku, units) => (withDesc ? [sku, 'd', 1] : [sku, 1]).concat(...units.map((u) => [u, u * 2]));
-  return [['Outbound Summary — October 2026'], ['note'],
-    pre.concat(...groups.map((g) => [g, ''])), h.concat(...groups.map(() => ['Units', 'Total Cost'])),
-    row('10030', [5, 1, 0, 0, 0, 0, 6]), row('A0030', [0, 0, 0, 0, 0, 7, 7]), row('TOTAL', [5, 1, 0, 0, 0, 7, 13])];
-};
-
-test('Rule 15.3: units by channel are read from Outbound Summary by header (with or without the Description column)', () => {
-  for (const withDesc of [true, false]) {
-    const got = plain(L.soldByChannelFromOutbound_(outbound(withDesc), 'Outbound Summary'));
-    assert.equal(got.length, 12, '2 SKUs × 6 channels; All Channels and TOTAL left out');
-    assert.deepEqual(got.filter((d) => d.qty), [{ group: 'DTC', sku: '10030', qty: 5 }, { group: 'Marketing', sku: '10030', qty: 1 }, { group: 'Amazon', sku: 'A0030', qty: 7 }]);
-  }
-  const bad = outbound(true); bad[4][3] = '#REF!';
-  assert.throws(() => L.soldByChannelFromOutbound_(bad, 'Outbound Summary'), /Nothing was written to Ops Hub: Units on "Outbound Summary" is not a number in row 5 \(10030, DTC\) shows "#REF!"/);
-  const noSamples = outbound(true).map((r) => r.slice(0, 11).concat(r.slice(13)));
-  assert.throws(() => L.soldByChannelFromOutbound_(noSamples, 'Outbound Summary'), /no Units column for: Samples/);
+test('Rule 15: the numbers written to Ops Hub, worked out from the sample month\'s files, are exactly the hand-worked ones', () => {
+  const x = sampleInputs(L), m = x.month, hub = sampleHub(2026, 8);
+  const sum = (list) => { const o = {}; list.forEach((d) => { const k = d.group + '|' + d.sku; o[k] = Math.round(((o[k] || 0) + d.qty) * 1e6) / 1e6; }); return o; };
+  // inventory_eom: ADS and Amazon rows (manufacturer rows are typed by hand)
+  const inv = sum(L.adsOnHand_(x.ads).concat(L.amazonOnHand_(x.ledger)));
+  const want = {};
+  hub.inventory.filter((r) => r.group === 'ADS' || r.group === 'Amazon').forEach((r) => { if (r.end) want[r.group + '|' + r.sku] = r.end; });
+  assert.deepEqual(inv, want);
+  // sell_thru monthly: counted Shopify lines by channel + manualorder_log + Amazon ledger shipments
+  const sold = sum(L.soldByChannel_(x.shopify, x.manualLog, x.ledger));
+  assert.deepEqual(sold, sum(hub.sellThru));
+  // wo_log: kit lines with date, pieces, SKU, rate
+  const bom = L.bomFromSource_(x.bomValues);
+  const kits = L.kitLines_(L.resolveWorkOrderSkus_(x.workOrders.lines, bom.rows, [], 'd').lines, m);
+  assert.deepEqual(plain(kits.map((k) => [k.serial, k.qty, k.sku, k.cost])), plain(hub.woLog.map((k) => [k.serial, k.qty, k.sku, k.cost])));
+  // and the plan puts them in the right places
+  const plan = L.planOpsHubWrite_({ inventory: L.adsOnHand_(x.ads).concat(L.amazonOnHand_(x.ledger)), sellThru: L.soldByChannel_(x.shopify, x.manualLog, x.ledger), kits, bomDescs: bom.descs },
+    { inventoryEom: [[''], ['Code', 'Location', 'SKU', m.prevEndSerial], ['ADS10030', 'ADS', '10030', 10]],
+      sellThru: [[], [], [], [], ['Channel', 'Code', 'SKU', 'Description', m.prevEndSerial]],
+      woLog: [['Date', 'Quantity', 'SKU', 'Cost']], skuMatrix: [['SKU', 'Description', 'Status']] }, m);
+  assert.equal(plan.inventoryEom.colValues[0][0], 5, 'ADS 10030 = 5');
+  assert.deepEqual(plain(plan.skuMatrix.rows.find((r) => r[0] === '80090,80090')), ['80090,80090', '180ct Refill', 'NEEDS VERIFICATION']);
 });
 
-test('Rule 15.2: ending inventory = Actual Ending Inventory of every Variance Overview row with a SKU', () => {
-  const v = [['Variance Overview — October 2026'], ['x'], [],
-    ['Location', 'SKU', 'Description', 'Categorization', 'Beginning Inventory', 'Receiving', 'Sold / Used', 'Expected Ending Inventory', 'Actual Ending Inventory'],
-    ['ADS', '10030', 'k', 'Ending Inventory', 0, 1, 1, 0, 309], ['VitaQuest', '70003', 'l', 'Raw', 0, 0, 0, 0, 800], ['', '', '', '', '', '', '', '', '']];
-  assert.deepEqual(plain(L.eomInventoryFromVariance_(v, 'VO')), [{ group: 'ADS', sku: '10030', qty: 309 }, { group: 'VitaQuest', sku: '70003', qty: 800 }]);
-  v[5][8] = 'NO COST';
-  assert.throws(() => L.eomInventoryFromVariance_(v, 'VO'), /row 6 \(VitaQuest 70003\) shows "NO COST"/);
+test('Rule 15.4: a kit line with no SKU, no Rate, Pieces that aren\'t a number, or a date outside the month stops the run', () => {
+  const l = (o) => Object.assign({ wo: 'WO1', date: '2026-10-07', sku: '10180', pieces: 50, rate: 0.54 }, o);
+  assert.deepEqual(plain(L.kitLines_([l({}), l({ pieces: 0, sku: '' })], oct)), [{ serial: L.dateSerial_(2026, 9, 7), qty: 50, sku: '10180', cost: 0.54, wo: 'WO1' }]);
+  assert.throws(() => L.kitLines_([l({ sku: '' })], oct), /have no SKU: WO1 \(2026-10-07\), 50 kits\. Type the SKU on Ops Hub "wo_sku_fixes"/);
+  assert.throws(() => L.kitLines_([l({ date: '2026-09-30' })], oct), /dated 09\/30\/2026, outside October 2026/);
+  assert.throws(() => L.kitLines_([l({ rate: '' })], oct), /Rate "" is not a number/);
+  assert.throws(() => L.kitLines_([l({ pieces: '' })], oct), /Pieces "" is not a number/);
 });
 
-const woTab = (rows) => [['Work Order', 'Ticket Number', 'Description (from report)', 'Date', 'SKU', 'Pieces', 'Rate', 'Rate Type', 'Amount']].concat(rows);
+test('Generate EOM Report: reads this month and last month out of Ops Hub; blank stays blank; stops if the month was not written yet', () => {
+  const got = L.readHubMonth_({ inventoryEom: invTab().map((r, i) => (i === 1 ? r.concat([OCT]) : i < 2 ? r : r.concat([i === 6 ? '' : i * 10]))),
+    sellThru: sellTab().map((r, i) => (i === 4 ? r.concat([OCT]) : i < 4 ? r : r.concat([i === 5 ? 7 : 0]))), woLog: woLog() }, oct);
+  assert.deepEqual(plain(got.inventory), [
+    { group: 'ADS', sku: '10030', begin: 0, end: 20 }, { group: 'ADS', sku: '20001', begin: 17, end: 30 },
+    { group: 'Amazon', sku: 'A0030', begin: 3001, end: 50 }, { group: 'VitaPros', sku: '70003', begin: 300, end: '' }]);
+  assert.deepEqual(plain(got.sellThru), [{ group: 'DTC', sku: '10030', qty: 7 }], 'rows with 0 units are left out');
+  assert.deepEqual(plain(got.woLog), [], 'no wo_log rows dated in October');
+  assert.throws(() => L.readHubMonth_({ inventoryEom: invTab(), sellThru: sellTab(), woLog: woLog() }, oct),
+    /Ops Hub tab "inventory_eom" has no Oct 2026 column yet\. Run EOM → 1\. Write month to Ops Hub for October 2026 first/);
+  const noSep = invTab().map((r) => r.slice(0, 4).concat(r.length > 4 ? [r[4]] : []));
+  noSep[1][4] = OCT;
+  assert.throws(() => L.readHubMonth_({ inventoryEom: noSep, sellThru: sellTab(), woLog: woLog() }, oct), /has no Sep 2026 column\. Last month's counts are this month's Beginning/);
+  const text = invTab().map((r, i) => (i === 1 ? r.concat([OCT]) : i < 2 ? r : r.concat([i === 3 ? 'n/a' : 1])));
+  assert.throws(() => L.readHubMonth_({ inventoryEom: text, sellThru: sellTab().map((r, i) => (i === 4 ? r.concat([OCT]) : r)), woLog: woLog() }, oct),
+    /Nothing was generated: Ops Hub tab "inventory_eom" has text where a number belongs: row 4 \(ADS 20001, Oct 2026\) shows "n\/a"/);
+  const sep = L.woLogMonthRows_(woLog(), L.monthInfo_(2026, 8));
+  assert.deepEqual(plain(sep), [{ serial: L.dateSerial_(2026, 8, 3), qty: 200, sku: '10030', cost: 0.54 }, { serial: L.dateSerial_(2026, 8, 24), qty: 22, sku: '10180', cost: 0.54 }]);
+});
 
-test('Rule 15.4: kit lines = Work Orders rows (Date, Pieces, SKU, Rate); a line with no SKU or outside the month stops the run', () => {
-  const ok = woTab([['WO1', 't', 'd', '2026-10-07', '10180', 50, 0.54, 'pieces', 27], ['WO2', 't', 'd', '2026-10-05', 'A0030', 0, 0.38, 'pieces', 0]]);
-  assert.deepEqual(plain(L.kitLinesFromWorkOrders_(ok, oct, 'WO')), [{ serial: L.dateSerial_(2026, 9, 7), qty: 50, sku: '10180', cost: 0.54, wo: 'WO1' }]);
-  assert.throws(() => L.kitLinesFromWorkOrders_(woTab([['WO3', 't', 'AMAZON KIT A-1080', '2026-10-15', '', 540, 0.38, 'pieces', 205.2]]), oct, 'WO'),
-    /have no SKU: WO3 \(row 2\), 540 kits\. Type the SKU on the WO SKU Fixes tab, run buildEOM again/);
-  assert.throws(() => L.kitLinesFromWorkOrders_(woTab([['WO4', 't', 'd', '2026-09-30', '10030', 5, 0.54, 'pieces', 2.7]]), oct, 'WO'), /dated 09\/30\/2026, outside October 2026/);
+test('Rule 12.14: Ops Hub vs the raw reports — differences by Group + SKU (repeats added up), nothing when they agree', () => {
+  const hub = [{ group: 'ADS', sku: '1', qty: 5 }, { group: 'ADS', sku: '2', qty: 3 }];
+  const raw = [{ group: 'ads', sku: '1', qty: 2 }, { group: 'ADS', sku: '1', qty: 3 }, { group: 'ADS', sku: '3', qty: 1 }];
+  assert.deepEqual(plain(L.tieOutDiffs_(hub, raw, 'Ops Hub', 'file').map((d) => d.text)), ['ADS 2: Ops Hub 3, file 0', 'ADS 3: Ops Hub 0, file 1']);
+  assert.deepEqual(plain(L.tieOutDiffs_(hub, hub, 'Ops Hub', 'file')), []);
 });
 
 const woLog = () => [

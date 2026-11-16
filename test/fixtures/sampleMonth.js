@@ -124,6 +124,42 @@ function sampleRaw(year, monthIndex) {
   return { adsStart, adsEnd, amzStart, ledger, biz, shopify, manualLog, amzLog, bomValues, cogsHeader: COGS_HEADER, cogsRows, woHtml };
 }
 
+const serial = (y, mi, d) => Math.round((Date.UTC(y, mi, d) - Date.UTC(1899, 11, 30)) / 86400000);
+
+/**
+ * What Ops Hub holds for the month once "Write month to Ops Hub" has run on sampleRaw (worked out BY HAND from the raw
+ * files above, so tests can prove the script gets the same numbers) — plus last month's column and the manufacturer
+ * counts typed by hand. Same shape as readHubMonth_: {inventory: [{group, sku, begin, end}], sellThru, woLog}.
+ */
+function sampleHub(year, monthIndex) {
+  const inv = (group, sku, begin, end) => ({ group, sku, begin, end });
+  return {
+    inventory: [
+      // ADS: begin = last month's snapshot (adsStart), end = this month's (adsEnd)
+      inv('ADS', '10030', 10, 5), inv('ADS', '80030', 100, 90), inv('ADS', '80090', 200, 170), inv('ADS', '50001', 50, 48),
+      inv('ADS', '51002', 30, 28), inv('ADS', '20001', 40, 35), inv('ADS', 'A0030', 20, 15), inv('ADS', '41001', 20, 16),
+      inv('ADS', '99999', 0, 0), // an old SKU with nothing: no row on the report
+      // Amazon: end = last day Ending + In Transit (A0030: 107 + 5 + 3); begin = last month's Ops Hub ending (ties to the 1st here)
+      inv('Amazon', 'A0030', 120, 115), inv('Amazon', 'A80004', 30, 25), inv('Amazon', '50001', 0, 4),
+      // Manufacturers: typed by hand in Ops Hub
+      inv('VitaQuest', '70003', 100, 120), inv('VitaPros', '70003', '', 300)
+    ],
+    sellThru: [
+      { group: 'DTC', sku: '10030', qty: 3 }, { group: 'DTC', sku: '80090,80090', qty: 2 },
+      { group: 'CX', sku: '80030', qty: 1 }, { group: 'CX', sku: '51002', qty: 1 },         // a Replacement order
+      { group: 'TikTok', sku: '80030,51002', qty: 1 },
+      { group: 'Marketing', sku: '80090', qty: 1 },                                          // "Free sample, TikTok" → Marketing (first match)
+      { group: 'Marketing', sku: '50001', qty: 2 }, { group: 'Samples', sku: '50001', qty: 1 }, // manualorder_log
+      { group: 'Amazon', sku: '50001', qty: 1 }, { group: 'Amazon', sku: 'A0030', qty: 20 }, { group: 'Amazon', sku: 'A80004', qty: 4 }
+    ],
+    woLog: [
+      { serial: serial(year, monthIndex, 3), qty: 5, sku: '10030', cost: 0.54 },
+      { serial: serial(year, monthIndex, 15), qty: 4, sku: 'A0030', cost: 0.38 },
+      { serial: serial(year, monthIndex, 16), qty: 6, sku: 'A0030', cost: 0.38 }
+    ]
+  };
+}
+
 function sampleInputs(ctx, overrides) {
   const m = ctx.monthInfo_(2026, 8);
   const raw = sampleRaw(2026, 8);
@@ -133,26 +169,24 @@ function sampleInputs(ctx, overrides) {
     todayStr: '2026-10-05',
     builtAt: '2026-10-05 09:00 by test',
     ads: t(raw.adsEnd, 'ADS'),
-    adsStart: t(raw.adsStart, 'ADS start'),
     ledger: t(raw.ledger, 'ledger'),
-    amzPrevEnd: { rows: ctx.ledgerLastDateRows_(t(raw.amzStart, 'start ledger'), m.prevEndSerial, 'start ledger'), source: 'test ledger', problem: null },
     biz: t(raw.biz, 'biz'),
     shopify: t(raw.shopify, 'shopify'),
     manualLog: ctx.parseOpsLog_(raw.manualLog, 'manual', m),
     amzLog: ctx.parseOpsLog_(raw.amzLog, 'amz', m),
     workOrders: ctx.parseWorkOrdersHtml_(raw.woHtml, m),
     bomValues: raw.bomValues,
+    woFixes: [],
+    hub: sampleHub(2026, 8),
     cogs: { header: raw.cogsHeader, rows: raw.cogsRows },
     prepaid: null,
-    skuMapExisting: [],
-    mfgStart: [['VitaQuest', '70003', 100]],
-    mfgStartFromPrev: true,
-    mfgInv: [['VitaQuest', '70003', 120, 50], ['VitaPros', '70003', 300, 300]], // MFG Counts: MFG, SKU, EOM Qty, Received Qty
     adsReceipts: [['PO-1', '50001', 10]],
-    sources: { startSources: 'test', shopifySource: 'test', mfgStartSource: 'test' },
-    ignoredFiles: []
+    mfgReceipts: [['VitaQuest', '70003', 50], ['VitaPros', '70003', 300]],
+    sources: { shopifySource: 'test' },
+    ignoredFiles: [],
+    extraTabs: []
   };
   return Object.assign(inputs, overrides || {});
 }
 
-module.exports = { sampleInputs, sampleRaw, csv, LEDGER_HEADER, ADS_HEADER };
+module.exports = { sampleInputs, sampleRaw, sampleHub, csv, serial, LEDGER_HEADER, ADS_HEADER };
