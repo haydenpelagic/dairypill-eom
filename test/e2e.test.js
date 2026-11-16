@@ -1,11 +1,11 @@
 'use strict';
 // Runs the REAL entry points against an in-memory Google Drive and Ops Hub 2.0:
 //   1. Write month to Ops Hub (September): ADS + Amazon rows, sell_thru, wo_log, sku_matrix; manufacturer rows left for you;
-//      wo_sku_fixes started from the old-layout report's WO SKU Fixes tab; running again changes nothing
+//      running again changes nothing
 //   2. Generate EOM Report (September): Ops Hub's numbers locked into the report; typed tabs kept on a rerun
 //   3. Generate before Write: stops, nothing changes
 //   4. October: Beginning = September's Ops Hub column; a blank manufacturer count stays blank; an Ops Hub edit shows + FLAG
-//   5. A work-order line with no SKU: listed on wo_sku_fixes, nothing else written; type the SKU and run again
+//   5. A work-order line with no SKU goes into wo_log as ADS wrote it; fixed there by hand, a rerun keeps the fix
 //   6. The EOM menu (month prompt, result pop-ups)
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -66,7 +66,7 @@ const parent = gas.root.createFolder('DairyPill EOM');
 const sep = parent.createFolder('September 2026');
 const rawSep = sampleRaw(2026, 8);
 putMonthFiles(sep, rawSep);
-// A September report from the OLD layout (before 2026-11-16): its WO SKU Fixes start the Ops Hub tab; its other tabs are left alone.
+// A September report from the OLD layout (before 2026-11-16): rebuilt in place; tabs it no longer makes are left alone.
 gas.spreadsheetWithId('old-sep-report', 'DAIRYPILL_EOM COGS - September 2026', sep, {
   'WO SKU Fixes': [['Reported as (Job, or Description when Job is blank)', 'Our SKU', 'Note'], ['NO GASSY DAYS STARTER KIT 30', '10030', 'typed by hand']],
   'MFG Counts 09.30.2026': [['MFG', 'SKU', 'EOM Qty', 'Received Qty'], ['VitaQuest', '70003', 120, 50]],
@@ -113,8 +113,7 @@ const wo = addTab('wo_log', [
   [D(2026, 7, 24), 22, '10180', 0.54, month(3), chan(3), '', 'A0090', 1],
   ['', '', '', '', month(4), chan(4)]], [3]); // formulas stop at row 4: later rows get them copied down
 const sku = addTab('sku_matrix', [['SKU', 'Description', 'Status'], ['10030', 'Starter Kit - Black 30ct', 'ACTIVE'], ['80090', '90ct Pouch', 'ACTIVE']], [1]);
-const fixesTab = () => hub.getSheetByName('wo_sku_fixes');
-const snap = () => [inv, sell, wo, sku, fixesTab()].map((s) => (s ? JSON.stringify(s.rawValues()) : 'none'));
+const snap = () => [inv, sell, wo, sku].map((s) => JSON.stringify(s.rawValues()));
 ctx.CONFIG.PARENT_FOLDER_ID = parent.getId();
 
 test('placeholder folder id gives a plain-English error', () => {
@@ -174,9 +173,7 @@ test('1. Write month to Ops Hub (September): ADS + Amazon rows, sell_thru, wo_lo
   assert.deepEqual(sm[1], ['10030', 'Starter Kit - Black 30ct', 'ACTIVE']);
   assert.ok(sm.slice(3).every((r) => r[2] === 'NEEDS VERIFICATION'));
 
-  // wo_sku_fixes: created, starting from the old-layout September report's WO SKU Fixes tab
-  assert.deepEqual(fixesTab().rawValues(), [['Reported as (Job, or Description when Job is blank)', 'Our SKU', 'Note'], ['NO GASSY DAYS STARTER KIT 30', '10030', 'typed by hand']]);
-  assert.match(summary, /wo_sku_fixes: tab created with the 1 rows of the WO SKU Fixes tab in the September 2026 report/);
+  assert.equal(hub.getSheetByName('wo_sku_fixes'), null, 'no fixes tab: SKUs are fixed in wo_log');
   assert.match(summary, /CHECK — manualorder_log: 3 row\(s\) with no Ship Date were not counted/);
 
   // raw files renamed; nothing else in the folder changed
@@ -187,7 +184,7 @@ test('1. Write month to Ops Hub (September): ADS + Amazon rows, sell_thru, wo_lo
   const once = snap();
   const again = ctx.writeOpsHub();
   assert.match(again, /inventory_eom: Sep 2026 column F replaced/);
-  assert.match(again, /wo_log: .* already up to date/);
+  assert.match(again, /wo_log: the 3 September 2026 row\(s\) already there \(rows 4–6\) were left as they are/);
   assert.match(again, /sku_matrix: no new SKUs/);
   assert.deepEqual(snap(), once);
 
@@ -221,7 +218,7 @@ test('2. Generate EOM Report (September): Ops Hub\'s numbers locked in; raw repo
   assert.deepEqual(COLS.map((c) => wb.value(tabs.variance, rowOf(ss, tabs.variance, 'VitaQuest', '70003'), c)), [100, 0, -20, 120, 120, 0], 'no MFG receipt typed yet');
   assert.deepEqual(COLS.map((c) => wb.value(tabs.variance, rowOf(ss, tabs.variance, 'VitaPros', '70003'), c)), [0, 0, -300, 300, 300, 0], 'a count typed as a formula in Ops Hub is copied as its value');
   for (const label of ['Ops Hub ending inventory = ADS snapshot and Amazon ledger', 'Ops Hub units sold = Shopify, manualorder_log and Amazon ledger',
-    'Ops Hub kits built = work-order report', 'Amazon starting balance = Ops Hub Aug 2026 ending', 'Manufacturer counts in Ops Hub inventory_eom']) {
+    'Ops Hub kits built = work-order report (total)', 'Amazon starting balance = Ops Hub Aug 2026 ending', 'Manufacturer counts in Ops Hub inventory_eom']) {
     assert.equal(checkResult(ss, wb, label), 'OK', label);
   }
   assert.equal(checkResult(ss, wb, 'Manufacturer rows with negative Sold / Used'), 'CHECK: 2 rows — more arrived than the count shows');
@@ -303,25 +300,33 @@ test('4. October: Beginning = September\'s Ops Hub column; a blank manufacturer 
   assert.equal(calc(ss).value(tabs.variance, rowOf(ss, tabs.variance, 'VitaQuest', '70003'), COLS[4]), 110);
 });
 
-test('5. A work-order line with no SKU: listed on Ops Hub wo_sku_fixes and nothing else written; type the SKU and run again', () => {
+test('5. A work-order line with no SKU goes into wo_log as ADS wrote it (not onto sku_matrix); fixed there by hand, a rerun keeps the fix', () => {
   const nov = parent.createFolder('November 2026');
   const raw = sampleRaw(2026, 10);
   raw.woHtml = raw.woHtml.replace('<td>2026-11-15</td><td>A0030</td>', '<td>2026-11-15</td><td></td>'); // ADS left Job blank
   putMonthFiles(nov, raw);
   ctx.CONFIG.MONTH_OVERRIDE = 'November 2026';
-  const before = snap(), files = names(nov);
-  assert.throws(() => ctx.writeOpsHub(), /Nothing was written to Ops Hub for November 2026: 1 work-order line\(s\) \(4 kits\) have no SKU the script can be sure of — WO_2 2026-11-15: Job blank, Description "AMAZON KIT & MAILER 150".*Type our SKU next to each, then run Write month to Ops Hub again/);
-  const after = snap();
-  assert.deepEqual(after.slice(0, 4), before.slice(0, 4), 'inventory_eom, sell_thru, wo_log, sku_matrix unchanged');
-  assert.deepEqual(names(nov), files, 'files not renamed');
-  const fx = fixesTab().rawValues();
-  assert.deepEqual(fx[2].slice(0, 2), ['AMAZON KIT & MAILER 150', '']);
-  fixesTab().getRange(3, 2).setValues([['A0030']]);
-  ctx.writeOpsHub();
-  const nl = wo.getDataRange().getValues().filter((r) => r[0] >= D(2026, 10, 1) && r[0] <= D(2026, 10, 30)).map((r) => [r[1], r[2]]);
-  assert.deepEqual(nl, [[5, '10030'], [4, 'A0030'], [6, 'A0030']]);
-});
+  const summary = ctx.writeOpsHub();
+  assert.match(summary, /TO FIX — 1 work-order line\(s\) went into wo_log as ADS wrote them, with no SKU: WO_2 2026-11-15: Job blank, Description "AMAZON KIT & MAILER 150" — 4 kits\. Type the right SKU in their SKU cell \(rows \d+–\d+\)/);
+  const novRows = () => wo.getDataRange().getValues().map((r, i) => [i + 1, r[0], r[1], r[2]]).filter((r) => r[1] >= D(2026, 10, 1) && r[1] <= D(2026, 10, 30));
+  assert.deepEqual(novRows().map((r) => [r[2], r[3]]), [[5, '10030'], [4, 'AMAZON KIT & MAILER 150'], [6, 'A0030']]);
+  assert.ok(!sku.getDataRange().getValues().some((r) => r[0] === 'AMAZON KIT & MAILER 150'), 'text is never added to sku_matrix');
 
+  // The report flags it until it is fixed in wo_log
+  ctx.generateEOMReport();
+  const ss = findFile(nov, 'DAIRYPILL_EOM COGS - November 2026').ss;
+  assert.equal(checksRow(ss, 'Kits built (Ops Hub wo_log) that have no BOM rows')[2], 'FLAG: 1');
+  // Someone fixes the SKU in wo_log; Write month to Ops Hub again keeps the fix; the report picks it up
+  const textRow = novRows().find((r) => r[3] === 'AMAZON KIT & MAILER 150')[0];
+  wo.getRange(textRow, 3).setValues([['A0030']]);
+  assert.match(ctx.writeOpsHub(), /wo_log: the 3 November 2026 row\(s\) already there .* were left as they are/);
+  assert.deepEqual(novRows().map((r) => [r[2], r[3]]), [[5, '10030'], [4, 'A0030'], [6, 'A0030']]);
+  ctx.generateEOMReport();
+  assert.equal(checksRow(ss, 'Kits built (Ops Hub wo_log) that have no BOM rows')[2], 'OK');
+  assert.equal(checksRow(ss, 'Ops Hub kits built = work-order report (total)')[2], 'OK');
+  const wb = calc(ss);
+  assert.equal(wb.value('Variance Overview', rowOf(ss, 'Variance Overview', 'ADS', 'A0030'), COLS[1]), 10, 'A0030 kits built = 4 + 6');
+});
 test('6. The EOM menu asks which month and shows the result, or the plain-English reason it stopped', () => {
   const ui = gas.ui;
   ui.shown.length = 0;

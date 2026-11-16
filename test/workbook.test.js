@@ -206,7 +206,7 @@ test('Rule 12: checks flag what is wrong and pass what is right', () => {
   assert.equal(result('Manufacturer counts in Ops Hub inventory_eom'), 'OK');
   assert.equal(result('Manufacturer rows with negative Sold / Used'), 'OK');
   for (const label of ['Ops Hub ending inventory = ADS snapshot and Amazon ledger', 'Ops Hub units sold = Shopify, manualorder_log and Amazon ledger',
-    'Ops Hub kits built = work-order report', 'Amazon starting balance = Ops Hub Aug 2026 ending']) assert.equal(result(label), 'OK', label);
+    'Ops Hub kits built = work-order report (total)', 'Amazon starting balance = Ops Hub Aug 2026 ending']) assert.equal(result(label), 'OK', label);
   // Rule 6.3: the AMZ SKU Map is made from the rules (one row per MSKU + ASIN in the ledger)
   assert.deepEqual(plain(sheet(T.skuMap).values.slice(1).map((r) => r.slice(0, 3))),
     [['A0030 - TEMP SKU', 'B1', 'A0030'], ['A80002', 'B2', 'A80004'], ['50001', 'B3', '50001']]);
@@ -255,7 +255,7 @@ test('Rule 12.14: Ops Hub changed after it was written — the report shows the 
   assert.deepEqual(plain(row('Ops Hub ending inventory = ADS snapshot and Amazon ledger').slice(2)),
     ['FLAG: 1 differ', 'ADS 80090: Ops Hub 175, ADS snapshot 170. The report uses the Ops Hub numbers. If Ops Hub was changed on purpose, nothing to do; otherwise run EOM → Write month to Ops Hub again, then Generate EOM Report.']);
   assert.match(row('Ops Hub units sold = Shopify, manualorder_log and Amazon ledger')[3], /^DTC 10030: Ops Hub 4, reports 3\./);
-  assert.match(row('Ops Hub kits built = work-order report')[3], /^A0030: Ops Hub 4, work-order report 10\./);
+  assert.match(row('Ops Hub kits built = work-order report (total)')[3], /^Kits built in September 2026: Ops Hub wo_log 9, work-order report 15\. The report uses Ops Hub wo_log\. Write month to Ops Hub never rewrites a month already there/);
   assert.equal(row('Amazon starting balance = Ops Hub Aug 2026 ending')[2], 'FLAG: 1 differ');
   assert.match(row('Amazon starting balance = Ops Hub Aug 2026 ending')[3], /^Amazon A0030: Ops Hub Aug 2026 ending 115, ledger 09\/01\/2026 starting 120\./);
   // Amazon Beginning itself still comes from the ledger (Rule 4.2)
@@ -402,7 +402,7 @@ test('Rule 4.2: Amazon Beginning/Ending include units travelling between Amazon 
   assert.equal(plain(L.amazonOnHand_(sampleInputs(L).ledger)).find((d) => d.sku === 'A0030' && d.qty > 100).qty, 107 + 3);
 });
 
-test('Rule 5.5a: kit lines with a blank or wordy Job — counted when certain, otherwise FLAG and listed on WO SKU Fixes', () => {
+test('Rule 5.5a / 8.2: kit lines with a blank or wordy Job — the report shows how each was read; kits built come from Ops Hub wo_log', () => {
   const inputs = sampleInputs(L);
   const wo = Object.assign({}, inputs.workOrders);
   const base = wo.lines.find((l) => l.sku === '10030');
@@ -411,30 +411,31 @@ test('Rule 5.5a: kit lines with a blank or wordy Job — counted when certain, o
     Object.assign({}, base, { wo: 'WO_X2', sku: '', description: 'NO GASSY DAYS STARTER KIT 30', pieces: 9 })     // no SKU anywhere
   ]);
   inputs.workOrders = wo;
+  // Ops Hub wo_log as Write month to Ops Hub left it (the 9 kits under ADS's text, not fixed yet)
+  inputs.hub = hubWith((h) => { h.woLog.push({ serial: h.woLog[0].serial, qty: 7, sku: '10030', cost: 0.54 }, { serial: h.woLog[0].serial, qty: 9, sku: 'NO GASSY DAYS STARTER KIT 30', cost: 0.54 }); });
   const b = L.buildWorkbookModel_(inputs);
   const w = workbookFromModels(b.sheets);
   const sh = (n) => b.sheets.find((s) => s.name === n);
   const woRows = sh(b.tabs.workOrders).values;
   assert.deepEqual(plain(woRows[0].slice(9)), ['Job (as reported)', 'How the SKU was found (Rule 5.5a)']);
-  const x1 = woRows.find((r) => r[0] === 'WO_X1'), x2 = woRows.find((r) => r[0] === 'WO_X2');
-  assert.equal(x1[4], '10030');
-  assert.equal(x2[4], '', 'unresolved line has no SKU, so its kits match no row');
-  // Kits built on the report come from Ops Hub wo_log (unchanged here), so Checks shows the work-order report differs
-  const v = b.sheets.find((s) => s.name === b.tabs.variance).values;
-  const r10030 = v.findIndex((r) => r[0] === 'ADS' && r[1] === '10030') + 1;
-  assert.equal(w.value(b.tabs.variance, r10030, 6), wb.value(T.variance, findRow(T.variance, 'ADS', '10030'), 6));
-  assert.match(sh(b.tabs.checks).values.find((r) => r[1] === 'Ops Hub kits built = work-order report')[3], /^10030: Ops Hub 5, work-order report 12\./);
-  const checks = sh(b.tabs.checks).values;
-  const line = (label) => checks.find((r) => r[1] === label);
-  assert.match(line('Work-order lines with no usable SKU (kits NOT counted)')[2], /^FLAG: 1 line\(s\) \/ 9 kits not counted/);
-  assert.match(line('Work-order lines with no usable SKU (kits NOT counted)')[3], /WO_X2 .*Job blank, Description "NO GASSY DAYS STARTER KIT 30"/);
-  assert.match(line('Work-order SKUs not taken from Job (confirm)')[2], /^CHECK: 1 line/);
-  assert.match(line('Work-order lines with no usable SKU (kits NOT counted)')[3], /Type our SKU next to each on Ops Hub "wo_sku_fixes"/);
+  assert.equal(woRows.find((r) => r[0] === 'WO_X1')[4], '10030');
+  assert.equal(woRows.find((r) => r[0] === 'WO_X2')[4], 'NO GASSY DAYS STARTER KIT 30');
+  // Receiving for ADS 10030 = Ops Hub wo_log: the original 5 + 7; the text line makes no ADS row and is flagged
+  const r10030 = findRow(T.variance, 'ADS', '10030', b);
+  assert.equal(w.value(b.tabs.variance, r10030, 6), 12);
+  assert.ok(!b.blocks.find((x) => x.kind === 'ADS').skus.includes('NO GASSY DAYS STARTER KIT 30'));
+  const line = (label) => checkRow(b, label);
+  assert.deepEqual(plain(line('Kits built (Ops Hub wo_log) that have no BOM rows').slice(2)), ['FLAG: 1',
+    'Components not deducted, and no ADS row, for: NO GASSY DAYS STARTER KIT 30 (9 kits). Fix the SKU in Ops Hub wo_log (or add the kit to the Ops Hub BOM), then Generate EOM Report again.']);
+  assert.match(line('Work-order lines ADS wrote with no SKU (went into wo_log as written)')[2], /^INFO: 1 line\(s\) \/ 9 kits/);
+  assert.match(line('Work-order SKUs found in the text (confirm)')[2], /^CHECK: 1 line/);
+  assert.equal(line('Ops Hub kits built = work-order report (total)')[2], 'OK', 'same total kits, whatever the SKUs');
+  // once fixed in wo_log, the flag clears and the kits count for the right SKU
+  const fixed = L.buildWorkbookModel_(Object.assign({}, inputs, { hub: hubWith((h) => { h.woLog.push({ serial: h.woLog[0].serial, qty: 16, sku: '10030', cost: 0.54 }); }) }));
+  assert.equal(checkRow(fixed, 'Kits built (Ops Hub wo_log) that have no BOM rows')[2], 'OK');
   // The normal sample month has nothing to fix.
-  const ok = sheet(T.checks).values;
-  assert.equal(ok.find((r) => r[1] === 'Work-order lines with no usable SKU (kits NOT counted)')[2], 'OK');
+  assert.equal(checkRow(built, 'Work-order lines ADS wrote with no SKU (went into wo_log as written)')[2], 'OK');
 });
-
 test('Rule 8.1a: one 41001 mailer per unit sold of 80030 / 80090 / 80090,80090 / 80090,80090,80090 and of any bundle with a pouch (counted Shopify lines)', () => {
   const bm = sheet(T.bundleMap).values;
   const mailerRows = bm.filter((r) => r[1] === '41001').map((r) => [r[0], r[2], r[5]]).sort((a, b) => (a[0] < b[0] ? -1 : 1));

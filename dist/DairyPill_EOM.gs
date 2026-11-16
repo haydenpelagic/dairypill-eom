@@ -46,10 +46,7 @@ var CONFIG = {
     // Amazon Store Number | Order Date (Date Labels are Received) | Ship Date (F, added 2026-11-13). Found by name.
     amzLog: { sheetName: 'amz_log', columns: 'A:F',
       headers: { order: 'ADS Order Number', amazon: 'Amazon Store Number', sku: 'SKU', qty: 'Quantity',
-                 orderDate: 'Order Date Date Labels are Received', shipDate: 'Ship Date' } },
-    // Rule 5.5a: our SKU for work-order lines whose Job is blank or words. One list for every month (moved here from
-    // the report on 2026-11-16, because the Ops Hub is now written first). Created by "Write month to Ops Hub" if missing.
-    woFixes: { sheetName: 'wo_sku_fixes', headers: ['Reported as (Job, or Description when Job is blank)', 'Our SKU', 'Note'] }
+                 orderDate: 'Order Date Date Labels are Received', shipDate: 'Ship Date' } }
   },
 
   // ---- Rule 15: "Write month to Ops Hub" fills these Ops Hub 2.0 tabs from the month's files ----
@@ -62,6 +59,7 @@ var CONFIG = {
     // Rule 15.3: one row per Channel + SKU, one column per month (header = month-end date).
     sellThru: { sheetName: 'sell_thru monthly', headerRow: 5, group: 'Channel', sku: 'SKU', code: 'Code', desc: 'Description' },
     // Rule 15.4: one row per kit line. Only these four columns are written; Month / Channel are formulas on the tab.
+    // A month that already has rows is never rewritten: SKUs are fixed there by hand (owner, 2026-11-16).
     woLog: { sheetName: 'wo_log', headers: { date: 'Date', qty: 'Quantity', sku: 'SKU', cost: 'Cost' }, formulaHeaders: ['Month', 'Channel'] },
     // Rule 15.5: SKUs not on sku_matrix are added with this Status.
     skuMatrix: { sheetName: 'sku_matrix', headers: { sku: 'SKU', desc: 'Description', status: 'Status' }, newStatus: 'NEEDS VERIFICATION' }
@@ -238,8 +236,8 @@ function showLink_(ui, title, text, url, linkText) {
  * Rule 15: reads the month folder's reports (ADS snapshot, Amazon ledger, Shopify orders, work orders) and the Ops Hub
  * logs, and writes the month into Ops Hub 2.0: sku_matrix (new SKUs), wo_log (kit lines), inventory_eom (ADS and
  * Amazon rows of the month's column — manufacturer rows are typed by hand) and sell_thru monthly (the month's column).
- * Everything is read and checked first; nothing is written if anything is wrong (the one exception: work-order lines
- * with no SKU are added to wo_sku_fixes so you can type it). Safe to run again: the month is replaced, never doubled.
+ * Everything is read and checked first; nothing is written if anything is wrong. Safe to run again: the month's columns
+ * are replaced, never doubled; a month already in wo_log is left alone (SKUs are fixed there by hand, rule 15.4).
  * Returns the plain-English summary.
  */
 function writeOpsHubFor_(monthText) {
@@ -264,17 +262,8 @@ function writeOpsHubFor_(monthText) {
   var amzLog = parseOpsLog_(readOpsLogValues_(hub, CONFIG.OPS_HUB.amzLog), 'amz', m);
   var bom = bomFromSource_(readBomSource_());
 
-  // Rule 5.5a: every kit line needs a SKU before wo_log is written.
-  var fixes = woFixesTab_(hub, f.parent, m);
-  var wo = resolveWorkOrderSkus_(workOrders.lines, bom.rows, fixes.rows, todayStr);
-  var fixesChanged = fixes.create || woFixRowsKey_(wo.fixRows) !== woFixRowsKey_(fixes.rows);
-  if (wo.unresolved.length) {
-    writeWoFixes_(hub, fixes, wo.fixRows);
-    var kits = wo.unresolved.reduce(function (a, l) { return a + (Number(l.pieces) || 0); }, 0);
-    throw new Error('Nothing was written to Ops Hub for ' + m.label + ': ' + wo.unresolved.length + ' work-order line(s) (' + kits +
-      ' kits) have no SKU the script can be sure of — ' + wo.unresolved.map(woLineText_).join('; ') + '. They are now listed on Ops Hub "' +
-      CONFIG.OPS_HUB.woFixes.sheetName + '" with Our SKU blank. Type our SKU next to each, then run Write month to Ops Hub again.');
-  }
+  // Rule 5.5a: each kit line's SKU — or, when ADS's text holds no certain SKU, the text as reported (fixed in wo_log by hand).
+  var wo = resolveWorkOrderSkus_(workOrders.lines, bom.rows);
   var data = {
     inventory: adsOnHand_(ads).concat(amazonOnHand_(ledger)),
     sellThru: soldByChannel_(shopify, manualLog, ledger),
@@ -291,7 +280,6 @@ function writeOpsHubFor_(monthText) {
   });
   var plan = planOpsHubWrite_(data, hubValues, m); // stops here, before any write, if anything is wrong
 
-  if (fixesChanged) writeWoFixes_(hub, fixes, wo.fixRows);
   applySkuMatrix_(sheets.skuMatrix, plan.skuMatrix);
   applyWoLog_(sheets.woLog, plan.woLog, hubValues.woLog[0]);
   applyMonthColumn_(sheets.inventoryEom, plan.inventoryEom);
@@ -307,8 +295,11 @@ function writeOpsHubFor_(monthText) {
 
   // Rule 15.6: what was done, and what to look at.
   var lines = opsHubSummary_(plan);
-  if (fixes.create) lines.push(CONFIG.OPS_HUB.woFixes.sheetName + ': tab created' + (fixes.seededFrom ? ' with the ' + fixes.rows.length + ' rows of the WO SKU Fixes tab in ' + fixes.seededFrom : '') + '.');
-  if (wo.corrected.length) lines.push('CHECK — work-order SKUs not taken from Job (confirm, or change on ' + CONFIG.OPS_HUB.woFixes.sheetName + ' and run again): ' + wo.corrected.map(woLineText_).join('; ') + '.');
+  if (wo.corrected.length) lines.push('CHECK — work-order SKUs found in the text (confirm in ' + W.woLog.sheetName + '): ' + wo.corrected.map(woLineText_).join('; ') + '.');
+  if (wo.asReported.length && plan.woLog.added) {
+    lines.push('TO FIX — ' + wo.asReported.length + ' work-order line(s) went into ' + W.woLog.sheetName + ' as ADS wrote them, with no SKU: ' +
+      wo.asReported.map(woLineText_).join('; ') + '. Type the right SKU in their SKU cell (rows ' + plan.woLog.monthFirstRow + '–' + plan.woLog.monthLastRow + ').');
+  }
   [[CONFIG.OPS_HUB.manualLog.sheetName, manualLog], [CONFIG.OPS_HUB.amzLog.sheetName, amzLog]].forEach(function (p) {
     if (p[1].notShipped) lines.push('CHECK — ' + p[0] + ': ' + p[1].notShipped + ' row(s) with no Ship Date were not counted (not shipped yet).');
   });
@@ -318,41 +309,6 @@ function writeOpsHubFor_(monthText) {
   lines.forEach(log_);
   log_('Done in ' + Math.round((new Date() - startedAt) / 1000) + 's: ' + hub.getUrl());
   return lines.join('\n');
-}
-
-/**
- * Rule 5.5a: the Ops Hub wo_sku_fixes tab: {sheet, rows, create, seededFrom}. When it doesn't exist yet it is started
- * from the WO SKU Fixes tab of this month's or last month's report (where these lived before 2026-11-16).
- */
-function woFixesTab_(hub, parent, m) {
-  var cfg = CONFIG.OPS_HUB.woFixes;
-  var sheet = sheetByName_(hub, cfg.sheetName);
-  var three = function (rows) { return rows.map(function (r) { return [r[0], r[1], r[2] === undefined ? '' : r[2]]; }); };
-  if (sheet) return { sheet: sheet, rows: three(readSheetTable_(sheet).rows), create: false, seededFrom: null };
-  var out = { sheet: null, rows: [], create: true, seededFrom: null };
-  [m.label, m.prevLabel].some(function (label) {
-    var folder = subfolder_(parent, label, false);
-    var file = folder && fileByName_(folder, workbookName_(parseMonthLabel_(label)));
-    var tab = file && sheetByName_(SpreadsheetApp.open(file), 'WO SKU Fixes');
-    if (!tab) return false;
-    out.rows = three(readSheetTable_(tab).rows);
-    out.seededFrom = 'the ' + label + ' report';
-    return true;
-  });
-  return out;
-}
-
-/** Rule 5.5a: writes the whole wo_sku_fixes list (header + rows, as text), creating the tab if needed. */
-function writeWoFixes_(hub, fixes, rows) {
-  var cfg = CONFIG.OPS_HUB.woFixes;
-  var sheet = fixes.sheet || hub.insertSheet(cfg.sheetName);
-  fixes.sheet = sheet;
-  var all = [cfg.headers.slice()].concat(rows.map(function (r) { return [textCell_(r[0]), cleanSku_(r[1]), textCell_(r[2])]; }));
-  var before = sheet.getLastRow();
-  ensureSize_(sheet, Math.max(all.length, before), 3);
-  if (before > all.length) sheet.getRange(all.length + 1, 1, before - all.length, 3).clearContent();
-  sheet.getRange(1, 1, all.length, 3).setNumberFormat('@');
-  sheet.getRange(1, 1, all.length, 3).setValues(all);
 }
 
 // -----------------------------------------------------------------------------
@@ -393,8 +349,6 @@ function generateEOMReportFor_(monthText) {
   inputs.bomValues = readBomSource_();
   inputs.manualLog = parseOpsLog_(readOpsLogValues_(hub, CONFIG.OPS_HUB.manualLog), 'manual', m);
   inputs.amzLog = parseOpsLog_(readOpsLogValues_(hub, CONFIG.OPS_HUB.amzLog), 'amz', m);
-  var fixSheet = sheetByName_(hub, CONFIG.OPS_HUB.woFixes.sheetName);
-  inputs.woFixes = fixSheet ? readSheetTable_(fixSheet).rows : [];
   var hv = {};
   ['inventoryEom', 'sellThru', 'woLog'].forEach(function (k) {
     var sh = sheetByName_(hub, W[k].sheetName);
@@ -1539,59 +1493,42 @@ function kitSkusInText_(text, parents) {
 
 /**
  * Rule 5.5a. ADS sometimes leaves Job blank or types words in it ("AMAZON KIT A0030"). For each kit line:
- *   1. Job is one word (a SKU)                                → Job, as before.
- *   2. "Reported as" (Job, or Description when Job is blank) is on the WO SKU Fixes tab with a SKU → that SKU.
- *   3. exactly one BOM kit SKU appears as a word in Job (else in Description) → that SKU (added to WO SKU Fixes).
- *   4. otherwise → no SKU: the kits are not counted, the line is added to WO SKU Fixes for you to fill, FLAG on Checks.
- * fixRows = [[reported as, our SKU, note]] carried from the tab. Never guesses beyond an exact SKU word.
+ *   1. Job is one word (a SKU)                                  → Job, as before.
+ *   2. exactly one BOM kit SKU appears as a word in Job (else in Description) → that SKU (listed as CHECK: confirm).
+ *   3. otherwise → written AS ADS REPORTED IT: the Job text, or the work order's Description when Job is blank. It goes
+ *      into Ops Hub wo_log like that and someone fixes the SKU there by hand (owner, 2026-11-16). Never guessed.
+ * Returns {lines (each with sku, job, reportedAs, how, certain), corrected (rule 2), asReported (rule 3)}.
  */
-function resolveWorkOrderSkus_(lines, bomRows, fixRows, todayStr) {
+function resolveWorkOrderSkus_(lines, bomRows) {
   var parents = {};
   bomRows.forEach(function (b) { parents[b[0]] = true; });
-  var rows = (fixRows || []).map(function (r) { return [textCell_(r[0]), cleanSku_(r[1]), textCell_(r[2])]; })
-    .filter(function (r) { return r[0] !== ''; });
-  var byKey = {};
-  rows.forEach(function (r) { if (!byKey[woKey_(r[0])]) byKey[woKey_(r[0])] = r; });
-  var corrected = [], unresolved = [];
+  var corrected = [], asReported = [];
   var out = lines.map(function (l) {
     var job = cleanSku_(l.sku);
     var x = {}; for (var k in l) x[k] = l[k];
     x.job = job;
     x.reportedAs = job !== '' ? job : String(l.description || '').replace(/\s+/g, ' ').trim();
-    var how = '', sku = '';
-    if (job !== '' && !/\s/.test(job)) {
-      sku = job; how = 'Job';
-    } else {
-      var fix = byKey[woKey_(x.reportedAs)];
-      if (fix && fix[1] !== '') {
-        sku = fix[1]; how = CONFIG.OPS_HUB.woFixes.sheetName;
-      } else {
-        var found = job !== '' ? kitSkusInText_(job, parents) : [];
-        var where = 'Job';
-        if (!found.length) { found = kitSkusInText_(l.description, parents); where = 'Description'; }
-        if (found.length === 1) {
-          sku = found[0]; how = 'found ' + sku + ' in ' + where;
-          var note = 'Added ' + todayStr + ': ' + how + ' — change the SKU if this is wrong';
-          if (fix) { fix[1] = sku; fix[2] = note; } else { fix = [x.reportedAs, sku, note]; rows.push(fix); byKey[woKey_(x.reportedAs)] = fix; }
-        } else if (!fix && x.reportedAs !== '') {
-          fix = [x.reportedAs, '', 'Added ' + todayStr + ': type our SKU — these kits are NOT counted until you do' +
-            (found.length > 1 ? ' (more than one kit SKU in the text: ' + found.join(', ') + ')' : '')];
-          rows.push(fix); byKey[woKey_(x.reportedAs)] = fix;
-        }
-      }
+    if (!x.reportedAs) x.reportedAs = 'Work order ' + l.wo + ' (no Job or Description)';
+    if (job !== '' && !/\s/.test(job)) { x.sku = job; x.how = 'Job'; x.certain = true; return x; }
+    var found = job !== '' ? kitSkusInText_(job, parents) : [], where = 'Job';
+    if (!found.length) { found = kitSkusInText_(l.description, parents); where = 'Description'; }
+    if (found.length === 1) {
+      x.sku = found[0]; x.how = 'found ' + found[0] + ' in ' + where; x.certain = true;
+      corrected.push(x);
+      return x;
     }
-    x.sku = sku;
-    x.how = sku ? how : 'NOT COUNTED — no SKU (type it on Ops Hub ' + CONFIG.OPS_HUB.woFixes.sheetName + ')';
-    if (!sku) unresolved.push(x); else if (how !== 'Job') corrected.push(x);
+    x.sku = x.reportedAs; x.certain = false;
+    x.how = 'as reported — fix the SKU in Ops Hub wo_log' + (found.length > 1 ? ' (more than one kit SKU in the text: ' + found.join(', ') + ')' : '');
+    asReported.push(x);
     return x;
   });
-  return { lines: out, fixRows: rows, corrected: corrected, unresolved: unresolved };
+  return { lines: out, corrected: corrected, asReported: asReported };
 }
 
 /** One line of a work-order list for Checks. */
 function woLineText_(l) {
   return l.wo + ' ' + l.date + ': ' + (l.job === '' ? 'Job blank, Description "' + l.description + '"' : 'Job "' + l.job + '"') +
-    (l.sku ? ' → ' + l.sku + ' (' + l.how + ')' : '') + ' — ' + l.pieces + ' kits';
+    (l.sku && l.certain !== false ? ' → ' + l.sku + ' (' + l.how + ')' : '') + ' — ' + l.pieces + ' kits';
 }
 
 /** Rule 5.5: one row per kit line. */
@@ -2277,16 +2214,16 @@ function checksModel_(ctx, info) {
   add('12.8', 'Work orders parsed completely', 'OK',
     info.workOrders.lines + ' kit lines (' + info.workOrders.fees + ' fee lines skipped); line amounts $' + info.workOrders.lineTotal.toFixed(2) +
     ' = report TOTAL $' + info.workOrders.reportTotal.toFixed(2) + '; billing month ' + info.workOrders.month + '.');
-  var unres = info.woUnresolved || [], corr = info.woCorrected || [];
-  var unresKits = unres.reduce(function (a, l) { return a + (Number(l.pieces) || 0); }, 0);
-  add('5.5a', 'Work-order lines with no usable SKU (kits NOT counted)',
-    unres.length ? 'FLAG: ' + unres.length + ' line(s) / ' + unresKits + ' kits not counted' : 'OK',
-    unres.length ? unres.map(woLineText_).join('; ') + '. Type our SKU next to each on Ops Hub "' + CONFIG.OPS_HUB.woFixes.sheetName +
-      '", then run EOM → Write month to Ops Hub and Generate EOM Report again (it is remembered for later months).' : '');
-  add('5.5a', 'Work-order SKUs not taken from Job (confirm)', corr.length ? 'CHECK: ' + corr.length + ' line(s)' : 'OK',
-    corr.length ? corr.map(woLineText_).join('; ') + '. Change any wrong one on Ops Hub "' + CONFIG.OPS_HUB.woFixes.sheetName + '" and run both steps again.' : 'Every kit line had its SKU in the Job column.');
-  add('8.2', 'Kits built that have no BOM rows', info.kitsWithoutBom.length ? 'FLAG: ' + info.kitsWithoutBom.length : 'OK',
-    info.kitsWithoutBom.length ? 'Components not deducted for: ' + info.kitsWithoutBom.join(', ') + ' — add them to the Ops Hub BOM.' : '');
+  var asRep = info.woAsReported || [], corr = info.woCorrected || [], wol = CONFIG.OPS_HUB_WRITE.woLog.sheetName;
+  var asRepKits = asRep.reduce(function (a, l) { return a + (Number(l.pieces) || 0); }, 0);
+  add('5.5a', 'Work-order lines ADS wrote with no SKU (went into ' + wol + ' as written)',
+    asRep.length ? 'INFO: ' + asRep.length + ' line(s) / ' + asRepKits + ' kits' : 'OK',
+    asRep.length ? asRep.map(woLineText_).join('; ') + '. Their SKU is fixed by hand in Ops Hub ' + wol + '; until it is, rule 8.2 below flags them.' : '');
+  add('5.5a', 'Work-order SKUs found in the text (confirm)', corr.length ? 'CHECK: ' + corr.length + ' line(s)' : 'OK',
+    corr.length ? corr.map(woLineText_).join('; ') + '. Change any wrong one in Ops Hub ' + wol + ', then Generate EOM Report again.' : 'Every kit line had its SKU in the Job column.');
+  add('8.2', 'Kits built (Ops Hub ' + wol + ') that have no BOM rows', info.kitsWithoutBom.length ? 'FLAG: ' + info.kitsWithoutBom.length : 'OK',
+    info.kitsWithoutBom.length ? 'Components not deducted, and no ADS row, for: ' + info.kitsWithoutBom.join(', ') + '. Fix the SKU in Ops Hub ' + wol +
+      ' (or add the kit to the Ops Hub BOM), then Generate EOM Report again.' : '');
   add('6.1', 'BOM duplicate rows removed', info.bomDuplicates.length ? 'INFO' : 'OK', info.bomDuplicates.join('; '));
   var ml = info.mailer, mrs = CONFIG.MAILER_RULE;
   add('12.7b', 'Mailer: out of on-hand cost, into Outbound cost',
@@ -2300,17 +2237,19 @@ function checksModel_(ctx, info) {
       'If their COGS cost already includes a mailer, add the mailer line in the Ops Hub BOM.' : ''));
   add('12.9', 'Ops Hub numbers used (locked)', 'INFO', info.hubSource);
   // Rule 12.14: the locked Ops Hub numbers compared with the raw reports in this folder (never stops the run).
-  var tieOut = function (rule, label, diffs, what) {
+  var tieOut = function (rule, label, diffs, what, outro) {
     add(rule, label, diffs.length ? 'FLAG: ' + diffs.length + ' differ' : 'OK',
       diffs.length ? diffs.slice(0, 25).map(function (d) { return d.text; }).join('; ') + (diffs.length > 25 ? '; and ' + (diffs.length - 25) + ' more' : '') +
-        '. The report uses the Ops Hub numbers. If Ops Hub was changed on purpose, nothing to do; otherwise run EOM → Write month to Ops Hub again, then Generate EOM Report.'
+        '. ' + (outro || 'The report uses the Ops Hub numbers. If Ops Hub was changed on purpose, nothing to do; otherwise run EOM → Write month to Ops Hub again, then Generate EOM Report.')
         : what);
   };
   var tie = info.tieOuts || { inventory: [], sold: [], kits: [], amzStart: [] };
   tieOut('12.14', 'Ops Hub ending inventory = ADS snapshot and Amazon ledger', tie.inventory, 'Every ADS and Amazon row in Ops Hub ' + inv + ' matches the raw reports.');
   tieOut('12.14', 'Ops Hub units sold = Shopify, ' + CONFIG.OPS_HUB.manualLog.sheetName + ' and Amazon ledger', tie.sold,
     'Every Channel + SKU in Ops Hub ' + CONFIG.OPS_HUB_WRITE.sellThru.sheetName + ' matches the raw reports.');
-  tieOut('12.14', 'Ops Hub kits built = work-order report', tie.kits, 'Ops Hub ' + CONFIG.OPS_HUB_WRITE.woLog.sheetName + ' has the same kits per SKU as the work-order report.');
+  tieOut('12.14', 'Ops Hub kits built = work-order report (total)', tie.kits, 'Ops Hub ' + wol + ' has as many kits dated in ' + ctx.month.label + ' as the work-order report.',
+    'The report uses Ops Hub ' + wol + '. Write month to Ops Hub never rewrites a month already there: fix the rows in ' + wol +
+    ' by hand, or delete the month\'s rows and run Write month to Ops Hub again.');
   var first = serialToMDY_(ctx.month.firstSerial);
   tieOut('12.10', 'Amazon starting balance = Ops Hub ' + serialMonthLabel_(ctx.month.prevEndSerial) + ' ending', tie.amzStart,
     'Every Amazon SKU\'s ' + first + ' starting balance (ledger) equals its ' + serialMonthLabel_(ctx.month.prevEndSerial) + ' ending in Ops Hub ' + inv + '.');
@@ -2413,7 +2352,6 @@ function readmeModel_(ctx) {
  *   manualLog, amzLog : parseOpsLog_ results (this month's rows of the Ops Hub shipment logs)
  *   workOrders : parseWorkOrdersHtml_ result
  *   bomValues  : raw values from the Ops Hub BOM columns
- *   woFixes    : rows of Ops Hub wo_sku_fixes [[reported as, our SKU, note]] (Rule 5.5a)
  *   hub        : readHubMonth_ result — the Ops Hub numbers locked into this report {inventory, sellThru, woLog}
  *   adsReceipts, mfgReceipts : rows typed on those tabs ([] when the tab is new)
  *   prepaid : {header, rows} | null ; copyFrom : {prepaid} (where to copy Prepaid from if it doesn't exist yet)
@@ -2452,8 +2390,8 @@ function buildWorkbookModel_(inputs) {
   var amzLogM = opsLogModel_(tabs.amzLog, inputs.amzLog, 'amz');
   var bom = bomFromSource_(inputs.bomValues);
   var bomM = bomModel_(tabs.bom, bom, inputs.todayStr);
-  // Rule 5.5a: how each kit line got its SKU (with Ops Hub wo_sku_fixes). The report never writes to Ops Hub.
-  var wo = resolveWorkOrderSkus_(inputs.workOrders.lines, bom.rows, inputs.woFixes || [], inputs.todayStr);
+  // Rule 5.5a: how each kit line got its SKU (reference only — kits built come from Ops Hub wo_log). The report never writes to Ops Hub.
+  var wo = resolveWorkOrderSkus_(inputs.workOrders.lines, bom.rows);
   var woParsed = {}; for (var wk in inputs.workOrders) woParsed[wk] = inputs.workOrders[wk];
   woParsed.lines = wo.lines;
   var woM = workOrdersModel_(tabs.workOrders, woParsed);
@@ -2511,8 +2449,12 @@ function buildWorkbookModel_(inputs) {
   };
   var adsReceipts = inputs.adsReceipts || [], mfgReceipts = inputs.mfgReceipts || [];
 
+  // A wo_log "SKU" that is not a BOM kit (e.g. ADS's text not fixed yet) makes no ADS row — Checks 8.2 flags it.
+  var bomParents = {};
+  bom.rows.forEach(function (b) { bomParents[b[0]] = true; });
   var adsSkus = uniqueSorted_([].concat(hubSkusAt(ADS), col(inputs.ads, C.ADS.sku),
-    adsReceipts.map(function (r) { return cleanSku_(r[1]); }), kitParents, manualLogSkus, amzLogSkus, bundleComponents));
+    adsReceipts.map(function (r) { return cleanSku_(r[1]); }), kitParents.filter(function (p) { return bomParents[p]; }),
+    manualLogSkus, amzLogSkus, bundleComponents));
 
   var amzFromLedger = col(inputs.ledger, C.LEDGER.msku).map(function (s) { return mapAmazonSku_(s).sku; });
   var bizAsins = col(inputs.biz, C.BIZ.asin);
@@ -2566,8 +2508,9 @@ function buildWorkbookModel_(inputs) {
   // --- Rule 12.14: the locked Ops Hub numbers vs the raw reports in the month folder
   var hubOwnedEnd = hub.inventory.filter(function (r) { return isOwned(r.group); })
     .map(function (r) { return { group: r.group, sku: r.sku, qty: r.end === '' ? 0 : r.end }; });
-  var rawKits = wo.lines.filter(function (l) { return l.sku && typeof l.pieces === 'number' && l.pieces !== 0; })
-    .map(function (l) { return { group: '', sku: l.sku, qty: l.pieces }; });
+  // Kits: totals only (SKUs are fixed by hand in wo_log, so they may rightly differ from ADS's text).
+  var kitTotal = function (list) { return [{ group: '', sku: 'Kits built in ' + m.label, qty: list.reduce(function (a, x) { return a + (Number(x.qty) || 0); }, 0) }]; };
+  var rawKits = wo.lines.filter(function (l) { return typeof l.pieces === 'number' && l.pieces !== 0; }).map(function (l) { return { qty: l.pieces }; });
   var hubAmzBegin = hub.inventory.filter(function (r) { return isLoc(r.group, AMZ); })
     .map(function (r) { return { group: AMZ, sku: r.sku, qty: r.begin === '' ? 0 : r.begin }; });
   var ledgerBegin = amzStartBySku_(amzStart);
@@ -2576,7 +2519,7 @@ function buildWorkbookModel_(inputs) {
     inventory: tieOutDiffs_(hubOwnedEnd, adsOnHand_(inputs.ads).concat(amazonOnHand_(inputs.ledger)), 'Ops Hub',
       function (d) { return isLoc(d.group, ADS) ? 'ADS snapshot' : 'Amazon ledger'; }),
     sold: tieOutDiffs_(hub.sellThru, soldByChannel_(inputs.shopify, inputs.manualLog, inputs.ledger), 'Ops Hub', 'reports'),
-    kits: tieOutDiffs_(hub.woLog.map(function (l) { return { group: '', sku: l.sku, qty: l.qty }; }), rawKits, 'Ops Hub', 'work-order report'),
+    kits: tieOutDiffs_(kitTotal(hub.woLog), kitTotal(rawKits), 'Ops Hub wo_log', 'work-order report'),
     amzStart: tieOutDiffs_(hubAmzBegin, Object.keys(ledgerBegin).map(function (s) { return { group: AMZ, sku: s, qty: ledgerBegin[s] }; }),
       'Ops Hub ' + prevLabel + ' ending', 'ledger ' + firstMDY + ' starting')
   };
@@ -2610,8 +2553,10 @@ function buildWorkbookModel_(inputs) {
     noDescSkus: allSkus.filter(function (s) { return !descs.desc[s]; }),
     unmappedAsins: uniqueSorted_(unmappedAsins),
     mapConflicts: skuMapConflicts_(mapRows).filter(function (x) { return x.kind === 'ASIN'; }),
-    kitsWithoutBom: kitM.kitsWithoutBom,
-    woCorrected: wo.corrected, woUnresolved: wo.unresolved,
+    kitsWithoutBom: kitM.kitsWithoutBom.map(function (p) {
+      return p + ' (' + hub.woLog.filter(function (l) { return l.sku === p; }).reduce(function (a, l) { return a + l.qty; }, 0) + ' kits)';
+    }),
+    woCorrected: wo.corrected, woAsReported: wo.asReported,
     bomDuplicates: bom.duplicates,
     workOrders: { lines: inputs.workOrders.lines.length, fees: inputs.workOrders.feeLines, lineTotal: inputs.workOrders.lineTotal,
       reportTotal: inputs.workOrders.reportTotal, month: inputs.workOrders.from },
@@ -2764,9 +2709,9 @@ function soldByChannel_(shopify, manualLog, ledger) {
 }
 
 /**
- * Rule 15.4: the month's kit lines from the work-order report, after Rule 5.5a gave each line its SKU:
- * [{serial, qty: Pieces, sku, cost: Rate, wo}] for every line with Pieces ≠ 0. A line with no SKU, no Rate, Pieces
- * that aren't a number, or a date outside the month stops the run — wo_log would get a wrong or blank row.
+ * Rule 15.4: the month's kit lines from the work-order report, after Rule 5.5a gave each line its SKU (or its text):
+ * [{serial, qty: Pieces, sku, cost: Rate, wo, certain}] for every line with Pieces ≠ 0. No Rate, Pieces that aren't a
+ * number, or a date outside the month stops the run — wo_log would get a wrong or blank row.
  */
 function kitLines_(lines, m) {
   var out = [], noSku = [], problems = [];
@@ -2779,18 +2724,11 @@ function kitLines_(lines, m) {
     try { serial = parseMDY_(l.date, ''); } catch (e) { problems.push(where + ': date "' + textCell_(l.date) + '" is not a date'); return; }
     if (serial < m.firstSerial || serial > m.endSerial) { problems.push(where + ': dated ' + serialToMDY_(serial) + ', outside ' + m.label); return; }
     if (typeof l.rate !== 'number') { problems.push(where + ': Rate "' + textCell_(l.rate) + '" is not a number'); return; }
-    out.push({ serial: serial, qty: l.pieces, sku: l.sku, cost: l.rate, wo: l.wo });
+    out.push({ serial: serial, qty: l.pieces, sku: l.sku, cost: l.rate, wo: l.wo, certain: l.certain !== false });
   });
-  throwIfProblems_(noSku, 'Nothing was written to Ops Hub: these work-order lines have no SKU:',
-    'Type the SKU on Ops Hub "' + CONFIG.OPS_HUB.woFixes.sheetName + '", then run Write month to Ops Hub again.');
+  throwIfProblems_(noSku, 'Nothing was written to Ops Hub: these work-order lines have no SKU or text at all:', 'Check the work-order report.');
   throwIfProblems_(problems, 'Nothing was written to Ops Hub: problems in the work-order report:', 'Download the work-order report again, then run Write month to Ops Hub again.');
   return out;
-}
-
-/** Rule 5.5a: wo_sku_fixes rows as [text, SKU, note] (blank rows dropped) — used to tell whether a run changed them. */
-function woFixRowsKey_(rows) {
-  return JSON.stringify((rows || []).map(function (r) { return [textCell_(r[0]).trim(), cleanSku_(r[1]), textCell_(r[2]).trim()]; })
-    .filter(function (r) { return r[0] !== ''; }));
 }
 
 /**
@@ -3033,12 +2971,12 @@ function woLogRowKey_(cells) {
 }
 
 /**
- * Rule 15.4: how wo_log must change so its rows dated in month m are exactly the month's kit lines.
- * `values` = the whole tab (row 1 = headers), dates as date numbers. Rows dated in the month are replaced;
- * every other row is kept, in order. The month's rows go where its old rows were (else before the first
- * later-dated row, else at the end), oldest first. Only Date / Quantity / SKU / Cost are written.
- * Returns {cols (1-based), changed, firstRow, rows ([date, qty, sku, cost] from firstRow; blank rows clear what
- * moved up), removed, added, monthFirstRow, monthLastRow}.
+ * Rule 15.4: what to add to wo_log for month m. `values` = the whole tab (row 1 = headers), dates as date numbers.
+ * If wo_log already has rows dated in the month they are LEFT ALONE (SKUs are fixed there by hand; owner, 2026-11-16) —
+ * to rewrite them, delete them and run again. Otherwise the month's kit lines are added, oldest first, before the first
+ * later-dated row (else at the end); rows below move down unchanged. Only Date / Quantity / SKU / Cost are written.
+ * Returns {cols (1-based), changed, kept (rows already there), firstRow, rows ([date, qty, sku, cost] from firstRow),
+ * added, monthFirstRow, monthLastRow}.
  */
 function planWoLog_(values, kits, m) {
   var W = CONFIG.OPS_HUB_WRITE.woLog, H = W.headers;
@@ -3067,18 +3005,19 @@ function planWoLog_(values, kits, m) {
       cells: [serial, blankCell_(cell(r, 'qty')) ? '' : cell(r, 'qty'), cleanSku_(cell(r, 'sku')), blankCell_(cell(r, 'cost')) ? '' : cell(r, 'cost')] });
   }
 
-  var fresh = kits.map(function (l, n) { return { serial: l.serial, n: n, cells: [l.serial, l.qty, l.sku, l.cost] }; })
-    .sort(function (a, b) { return a.serial - b.serial || a.n - b.n; });
+  var colsOut = {};
+  keys.forEach(function (k) { colsOut[k] = cols[k] + 1; });
   var inMonth = function (e) { return e.serial !== '' && e.serial >= m.firstSerial && e.serial <= m.endSerial; };
   var old = existing.filter(inMonth);
-  var kept = existing.filter(function (e) { return !inMonth(e); });
-  var at;
   if (old.length) {
-    at = kept.filter(function (e) { return e.row < old[0].row; }).length;
-  } else {
-    at = kept.length;
-    for (i = 0; i < kept.length; i++) if (kept[i].serial !== '' && kept[i].serial > m.endSerial) { at = i; break; }
+    return { cols: colsOut, changed: false, kept: old.length, firstRow: null, rows: [], added: 0,
+      monthFirstRow: old[0].row, monthLastRow: old[old.length - 1].row };
   }
+  var fresh = kits.map(function (l, n) { return { serial: l.serial, n: n, cells: [l.serial, l.qty, l.sku, l.cost] }; })
+    .sort(function (a, b) { return a.serial - b.serial || a.n - b.n; });
+  var kept = existing;
+  var at = kept.length;
+  for (i = 0; i < kept.length; i++) if (kept[i].serial !== '' && kept[i].serial > m.endSerial) { at = i; break; }
   var cellsOf = function (e) { return e.cells; };
   var target = kept.slice(0, at).map(cellsOf).concat(fresh.map(cellsOf), kept.slice(at).map(cellsOf));
   var before = existing.map(cellsOf);
@@ -3088,11 +3027,9 @@ function planWoLog_(values, kits, m) {
   for (i = 0; i < size; i++) if (woLogRowKey_(target[i] || blank) !== woLogRowKey_(before[i] || blank)) { first = i; break; }
   var rows = [];
   if (first >= 0) for (i = first; i < size; i++) rows.push(target[i] || blank.slice());
-  var colsOut = {};
-  keys.forEach(function (k) { colsOut[k] = cols[k] + 1; });
   return {
-    cols: colsOut, changed: first >= 0, firstRow: first >= 0 ? first + 2 : null, rows: rows,
-    removed: old.length, added: fresh.length, monthFirstRow: at + 2, monthLastRow: at + 1 + fresh.length
+    cols: colsOut, changed: first >= 0, kept: 0, firstRow: first >= 0 ? first + 2 : null, rows: rows,
+    added: fresh.length, monthFirstRow: at + 2, monthLastRow: at + 1 + fresh.length
   };
 }
 
@@ -3125,7 +3062,8 @@ function planOpsHubWrite_(data, hubValues, m) {
   // Rule 15.5: every SKU that lands on an Ops Hub tab with a number other than 0, or in a kit line.
   var nonZero = function (d) { return Math.round(d.qty * 1e6) !== 0; };
   var skus = uniqueSorted_([].concat(data.inventory.filter(nonZero).map(function (d) { return d.sku; }),
-    data.sellThru.filter(nonZero).map(function (d) { return d.sku; }), data.kits.map(function (k) { return k.sku; })));
+    data.sellThru.filter(nonZero).map(function (d) { return d.sku; }),
+    data.kits.filter(function (k) { return k.certain !== false; }).map(function (k) { return k.sku; }))); // text "as reported" is not a SKU
   var descs = skuDescriptions_(data.bomDescs || {}, skus).desc;
   return {
     month: m,
@@ -3152,8 +3090,10 @@ function opsHubSummary_(plan) {
       : ' All have a ' + m.shortLabel + ' count.'));
   });
   var wo = plan.woLog;
-  out.push(W.woLog.sheetName + ': ' + (wo.added ? 'rows ' + wo.monthFirstRow + '–' + wo.monthLastRow + ' hold the ' + wo.added + ' ' + m.label + ' kit lines' : 'no ' + m.label + ' kit lines') +
-    (wo.changed ? ' (replaced ' + wo.removed + ' ' + m.label + ' row' + (wo.removed === 1 ? '' : 's') + ' that were there).' : ' — already up to date.'));
+  out.push(W.woLog.sheetName + ': ' + (wo.kept
+    ? 'the ' + wo.kept + ' ' + m.label + ' row(s) already there (rows ' + wo.monthFirstRow + '–' + wo.monthLastRow + ') were left as they are — ' +
+      'to rewrite them from the work-order report, delete them and run again.'
+    : wo.added ? 'rows ' + wo.monthFirstRow + '–' + wo.monthLastRow + ' now hold the ' + wo.added + ' ' + m.label + ' kit lines.' : 'no ' + m.label + ' kit lines.'));
   var sk = plan.skuMatrix;
   out.push(W.skuMatrix.sheetName + ': ' + (sk.rows.length ? sk.rows.length + ' new SKU(s) added with Status ' + W.skuMatrix.newStatus + ': ' +
     sk.rows.map(function (r) { return r[0]; }).join(', ') + '.' : 'no new SKUs.'));

@@ -71,8 +71,9 @@ If something goes wrong:
    - **`manualorder_log`** — every non-Shopify shipment out of ADS (samples, marketing, replacements…), with its **Channel** (DTC, Marketing, CX, TikTok or Samples) and **Ship Date**.
    - **`amz_log`** — every shipment out of ADS to Amazon, with its **Ship Date** (the day it left ADS; leave blank if it hasn't shipped yet).
 
-2. **Ops Hub → EOM → 1. Write month to Ops Hub.** Leave the month blank for last month (or type it, e.g. `October 2026`) → **OK**. In a minute or two a pop-up says what it wrote: the month's column on `inventory_eom` (ADS and Amazon rows) and `sell_thru monthly`, the month's kit lines on `wo_log`, new SKUs on `sku_matrix` (Status **NEEDS VERIFICATION**). If something is wrong it stops before writing anything and says why. Running it again just replaces the month — nothing doubles.
-   - If it says a **work-order line has no SKU**: open Ops Hub tab **`wo_sku_fixes`**, type our SKU next to the line it added, and run **Write month to Ops Hub** again. It's remembered for later months.
+2. **Ops Hub → EOM → 1. Write month to Ops Hub.** Leave the month blank for last month (or type it, e.g. `October 2026`) → **OK**. In a minute or two a pop-up says what it wrote: the month's column on `inventory_eom` (ADS and Amazon rows) and `sell_thru monthly`, the month's kit lines on `wo_log`, new SKUs on `sku_matrix` (Status **NEEDS VERIFICATION**). If something is wrong it stops before writing anything and says why. Running it again replaces the month's columns — nothing doubles.
+   - **TO FIX** lines: work-order lines where ADS left the Job blank or typed words (e.g. "NO GASSY DAYS STARTER KIT 30") go into `wo_log` with that text as the SKU. Type the right SKU over it in `wo_log`.
+   - Once a month is in `wo_log`, running Write again **never changes those rows**, so your fixes are safe. To rebuild a month's kit lines from the work-order report, delete its rows in `wo_log` first.
 
 3. **Type the manufacturer counts** in Ops Hub **`inventory_eom`**, in the new month's column, on every row whose Location isn't ADS or Amazon (VitaQuest, VitaPros…). The pop-up lists the rows still blank. For a new manufacturer or SKU, add a row at the bottom: Code (Location + SKU, e.g. `VitaQuest70001`), Location, SKU.
 
@@ -100,7 +101,7 @@ The same two steps are **writeOpsHub** and **generateEOMReport** in the EOM Auto
 Until 2026-11-16 the report was built first and copied into Ops Hub afterwards. For the first month done the new way:
 
 - Ops Hub needs **last month's column** on `inventory_eom` (the report's Beginning Inventory). If it's missing, Generate EOM Report says so.
-- **Write month to Ops Hub** creates the Ops Hub tab **`wo_sku_fixes`** from the **WO SKU Fixes** tab of that month's old report, so the SKUs you typed there keep working.
+- Work-order lines ADS wrote as words go into `wo_log` as written: fix them there (the old report's **WO SKU Fixes** tab has the SKUs you used before).
 - Type the month's manufacturer counts in `inventory_eom` (they were on the old report's **MFG Counts** tab), and their receipts on the new **MFG Receipts** tab.
 - Generating into the old report keeps your COGS, ADS Receipts and Prepaid. Old tabs (MFG Counts, MFG Starting Balance, ADS Starting Balance, WO SKU Fixes…) are left alone and listed on Checks — delete them.
 - Expect **"Amazon starting balance = Ops Hub … ending"** to FLAG if last month's Amazon numbers in Ops Hub were typed by hand without units in transit. The report uses Amazon's ledger for Beginning (RULES 4.2), so this is information, not an error.

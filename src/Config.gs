@@ -42,10 +42,7 @@ var CONFIG = {
     // Amazon Store Number | Order Date (Date Labels are Received) | Ship Date (F, added 2026-11-13). Found by name.
     amzLog: { sheetName: 'amz_log', columns: 'A:F',
       headers: { order: 'ADS Order Number', amazon: 'Amazon Store Number', sku: 'SKU', qty: 'Quantity',
-                 orderDate: 'Order Date Date Labels are Received', shipDate: 'Ship Date' } },
-    // Rule 5.5a: our SKU for work-order lines whose Job is blank or words. One list for every month (moved here from
-    // the report on 2026-11-16, because the Ops Hub is now written first). Created by "Write month to Ops Hub" if missing.
-    woFixes: { sheetName: 'wo_sku_fixes', headers: ['Reported as (Job, or Description when Job is blank)', 'Our SKU', 'Note'] }
+                 orderDate: 'Order Date Date Labels are Received', shipDate: 'Ship Date' } }
   },
 
   // ---- Rule 15: "Write month to Ops Hub" fills these Ops Hub 2.0 tabs from the month's files ----
@@ -58,6 +55,7 @@ var CONFIG = {
     // Rule 15.3: one row per Channel + SKU, one column per month (header = month-end date).
     sellThru: { sheetName: 'sell_thru monthly', headerRow: 5, group: 'Channel', sku: 'SKU', code: 'Code', desc: 'Description' },
     // Rule 15.4: one row per kit line. Only these four columns are written; Month / Channel are formulas on the tab.
+    // A month that already has rows is never rewritten: SKUs are fixed there by hand (owner, 2026-11-16).
     woLog: { sheetName: 'wo_log', headers: { date: 'Date', qty: 'Quantity', sku: 'SKU', cost: 'Cost' }, formulaHeaders: ['Month', 'Channel'] },
     // Rule 15.5: SKUs not on sku_matrix are added with this Status.
     skuMatrix: { sheetName: 'sku_matrix', headers: { sku: 'SKU', desc: 'Description', status: 'Status' }, newStatus: 'NEEDS VERIFICATION' }

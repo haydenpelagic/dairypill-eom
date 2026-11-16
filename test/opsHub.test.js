@@ -58,11 +58,11 @@ test('Rule 15.2: running again for the same month replaces the ADS / Amazon cell
   assert.deepEqual(plain(p.colValues), [[5], [0], [null], [0], [null]], 'null = leave the cell alone (blank row, VitaPros)');
   assert.equal(p.added, 0);
   assert.deepEqual(plain(p.handRows), [{ group: 'VitaPros', sku: '70003', blank: false }]);
-  const lines = L.opsHubSummary_({ month: oct, inventoryEom: p, sellThru: Object.assign({}, p, { handRows: [] }), woLog: { added: 0, changed: false }, skuMatrix: { rows: [] } });
+  const lines = L.opsHubSummary_({ month: oct, inventoryEom: p, sellThru: Object.assign({}, p, { handRows: [] }), woLog: { added: 0, kept: 0, changed: false }, skuMatrix: { rows: [] } });
   assert.match(lines[1], /Manufacturer rows are typed by hand and were not touched \(1\)\. All have a Oct 2026 count\./);
   tab[6][5] = '';
   const blank = L.planMonthColumn_(tab, W.inventoryEom, oct, [], {});
-  const lines2 = L.opsHubSummary_({ month: oct, inventoryEom: blank, sellThru: Object.assign({}, blank, { handRows: [] }), woLog: { added: 0, changed: false }, skuMatrix: { rows: [] } });
+  const lines2 = L.opsHubSummary_({ month: oct, inventoryEom: blank, sellThru: Object.assign({}, blank, { handRows: [] }), woLog: { added: 0, kept: 0, changed: false }, skuMatrix: { rows: [] } });
   assert.match(lines2[1], /Still blank for Oct 2026: VitaPros 70003 — type each count in column F before Generate EOM Report/);
 });
 
@@ -113,7 +113,7 @@ test('Rule 15: the numbers written to Ops Hub, worked out from the sample month\
   assert.deepEqual(sold, sum(hub.sellThru));
   // wo_log: kit lines with date, pieces, SKU, rate
   const bom = L.bomFromSource_(x.bomValues);
-  const kits = L.kitLines_(L.resolveWorkOrderSkus_(x.workOrders.lines, bom.rows, [], 'd').lines, m);
+  const kits = L.kitLines_(L.resolveWorkOrderSkus_(x.workOrders.lines, bom.rows).lines, m);
   assert.deepEqual(plain(kits.map((k) => [k.serial, k.qty, k.sku, k.cost])), plain(hub.woLog.map((k) => [k.serial, k.qty, k.sku, k.cost])));
   // and the plan puts them in the right places
   const plan = L.planOpsHubWrite_({ inventory: L.adsOnHand_(x.ads).concat(L.amazonOnHand_(x.ledger)), sellThru: L.soldByChannel_(x.shopify, x.manualLog, x.ledger), kits, bomDescs: bom.descs },
@@ -121,13 +121,20 @@ test('Rule 15: the numbers written to Ops Hub, worked out from the sample month\
       sellThru: [[], [], [], [], ['Channel', 'Code', 'SKU', 'Description', m.prevEndSerial]],
       woLog: [['Date', 'Quantity', 'SKU', 'Cost']], skuMatrix: [['SKU', 'Description', 'Status']] }, m);
   assert.equal(plan.inventoryEom.colValues[0][0], 5, 'ADS 10030 = 5');
+  // a kit line ADS wrote as words goes into wo_log as written, but never onto sku_matrix as a "SKU"
+  const plan2 = L.planOpsHubWrite_({ inventory: [], sellThru: [], kits: [{ serial: m.endSerial, qty: 9, sku: 'NO GASSY DAYS STARTER KIT 30', cost: 0.5, certain: false }], bomDescs: {} },
+    { inventoryEom: [[''], ['Code', 'Location', 'SKU', m.prevEndSerial]], sellThru: [[], [], [], [], ['Channel', 'Code', 'SKU', 'Description', m.prevEndSerial]],
+      woLog: [['Date', 'Quantity', 'SKU', 'Cost']], skuMatrix: [['SKU', 'Description', 'Status']] }, m);
+  assert.deepEqual(plain(plan2.woLog.rows), [[m.endSerial, 9, 'NO GASSY DAYS STARTER KIT 30', 0.5]]);
+  assert.deepEqual(plain(plan2.skuMatrix.rows), []);
   assert.deepEqual(plain(plan.skuMatrix.rows.find((r) => r[0] === '80090,80090')), ['80090,80090', '180ct Refill', 'NEEDS VERIFICATION']);
 });
 
-test('Rule 15.4: a kit line with no SKU, no Rate, Pieces that aren\'t a number, or a date outside the month stops the run', () => {
+test('Rule 15.4: kit lines (a line written as ADS reported it is kept, marked not certain); no Rate, Pieces that aren\'t a number, or a date outside the month stops the run', () => {
   const l = (o) => Object.assign({ wo: 'WO1', date: '2026-10-07', sku: '10180', pieces: 50, rate: 0.54 }, o);
-  assert.deepEqual(plain(L.kitLines_([l({}), l({ pieces: 0, sku: '' })], oct)), [{ serial: L.dateSerial_(2026, 9, 7), qty: 50, sku: '10180', cost: 0.54, wo: 'WO1' }]);
-  assert.throws(() => L.kitLines_([l({ sku: '' })], oct), /have no SKU: WO1 \(2026-10-07\), 50 kits\. Type the SKU on Ops Hub "wo_sku_fixes"/);
+  assert.deepEqual(plain(L.kitLines_([l({}), l({ pieces: 0, sku: '' })], oct)), [{ serial: L.dateSerial_(2026, 9, 7), qty: 50, sku: '10180', cost: 0.54, wo: 'WO1', certain: true }]);
+  assert.deepEqual(plain(L.kitLines_([l({ sku: 'KIT 30', certain: false })], oct).map((k) => [k.sku, k.certain])), [['KIT 30', false]]);
+  assert.throws(() => L.kitLines_([l({ sku: '' })], oct), /no SKU or text at all: WO1 \(2026-10-07\), 50 kits/);
   assert.throws(() => L.kitLines_([l({ date: '2026-09-30' })], oct), /dated 09\/30\/2026, outside October 2026/);
   assert.throws(() => L.kitLines_([l({ rate: '' })], oct), /Rate "" is not a number/);
   assert.throws(() => L.kitLines_([l({ pieces: '' })], oct), /Pieces "" is not a number/);
@@ -179,17 +186,19 @@ function applyWo(values, p) {
   return out;
 }
 
-test('Rule 15.4: wo_log — the month\'s kit lines go after last month\'s, oldest first; running again changes nothing; a new report replaces them', () => {
+test('Rule 15.4: wo_log — the month\'s kit lines go after last month\'s, oldest first; once the month is there it is never rewritten (fixed by hand)', () => {
   const p = L.planWoLog_(woLog(), kits, oct);
   assert.equal(p.changed, true);
   assert.equal(p.firstRow, 4);
   assert.deepEqual(plain(p.rows), [[L.dateSerial_(2026, 9, 5), 200, '10030', 0.54], [L.dateSerial_(2026, 9, 7), 50, '10180', 0.54]]);
   assert.deepEqual(plain(p.cols), { date: 1, qty: 2, sku: 3, cost: 4 }, 'the rate table\'s second "SKU" header is not used');
   const after = applyWo(woLog(), p);
-  assert.equal(L.planWoLog_(after, kits, oct).changed, false, 'second run: already up to date');
-  const fewer = L.planWoLog_(after, kits.slice(0, 1), oct);
-  assert.deepEqual(plain(fewer.rows), [[L.dateSerial_(2026, 9, 7), 50, '10180', 0.54], ['', '', '', '']], 'the October row that is gone is cleared');
-  assert.equal(fewer.removed, 2);
+  after[3][2] = '10031'; // someone fixes a SKU in wo_log
+  const again = L.planWoLog_(after, kits.slice(0, 1), oct);
+  assert.deepEqual([again.changed, again.kept, again.monthFirstRow, again.monthLastRow, again.rows.length], [false, 2, 4, 5, 0], 'left alone, even with a different report');
+  assert.match(L.opsHubSummary_({ month: oct, woLog: again, skuMatrix: { rows: [] },
+    inventoryEom: { col: 6, isNew: false, updated: 0, added: 0, newRows: [], handRows: [] }, sellThru: { col: 7, isNew: false, updated: 0, added: 0, newRows: [], handRows: [] } })[2],
+  /^wo_log: the 2 October 2026 row\(s\) already there \(rows 4–5\) were left as they are — to rewrite them from the work-order report, delete them and run again\.$/);
   const missingDate = woLog(); missingDate[2][0] = '';
   assert.throws(() => L.planWoLog_(missingDate, kits, oct), /row 3 has a Quantity\/SKU\/Cost but no Date/);
 });
