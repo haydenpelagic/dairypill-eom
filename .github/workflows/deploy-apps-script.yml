@@ -34,8 +34,9 @@ jobs:
             exit 1
           fi
 
-      # Checks the secret is a sign-in file (from clasp 2 or clasp 3 login) and writes it where the uploader reads it.
-      # A bad secret stops here with a plain-English reason; the secret is never printed.
+      # Checks the secret is a sign-in file (from clasp 2 or clasp 3 login), asks Google whether it still works, and
+      # writes it where the uploader reads it. A bad or expired sign-in stops here with Google's reason in plain English;
+      # the secret is never printed.
       - name: Load the Google sign-in for clasp
         env:
           CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}

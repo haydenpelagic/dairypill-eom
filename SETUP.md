@@ -30,9 +30,11 @@ Good to know:
 - Only the **main** branch goes live (once its tests pass). Change the script from **one Claude session at a time**.
 - Either version of `clasp login` works (clasp 2 or clasp 3): the deploy converts a clasp 3 sign-in for its uploader.
 - In step 4, paste into GitHub **straight after** `pbcopy` — copying anything else in between replaces the sign-in on your clipboard.
-- If an upload goes red, the step **Load the Google sign-in** says why in plain English:
-  - **"is not a Google sign-in file"** or **"is empty"**: the secret holds something else. Redo steps 4–5 (click the pencil on the existing `CLASPRC_JSON` secret and paste over it), then **Re-run jobs** on the red run.
-  - **invalid_grant** (in the Upload step): the saved sign-in expired. Redo steps 3–5, then **Re-run jobs**.
+- If an upload goes red, the step **Load the Google sign-in** says why in plain English (it asks Google whether the sign-in still works):
+  - **"is not a Google sign-in file"** or **"is empty"**: the secret holds something else. Redo steps 4–5 (click the pencil on the existing `CLASPRC_JSON` secret and paste over it), then **Run workflow** again.
+  - **"Google no longer accepts this sign-in"** or **"cut off by a Google Workspace security rule"**: the saved sign-in stopped working; the message says why and what makes it last. Redo steps 3–5, then **Run workflow** again.
+- **Weekly check:** every Monday GitHub runs **Check Google sign-in** (uploads nothing). If the sign-in has stopped working, that run fails and GitHub emails you, so you can fix it before you need a deploy. Run it by hand any time (Actions → **Check Google sign-in** → **Run workflow**) — e.g. right after updating the secret, to confirm it works.
+- After fixing the secret, use **Run workflow** on **Deploy to Apps Script** (it uploads the latest code). **Re-run jobs** on an old red run would upload that run's older code.
 - To cut GitHub's access: Google Account → Security → Third-party connections → remove **clasp**, then delete the secret.
 - Backup (only on your Mac, with clasp signed in): `npm run deploy` runs the tests, rebuilds and uploads.
 

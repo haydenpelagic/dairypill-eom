@@ -5,7 +5,10 @@
 //   clasp 2.x  { token: {...}, oauth2ClientSettings: {...}, isLocalCreds }       -> used as is
 //   clasp 3.x  { tokens: { default: { client_id, client_secret, refresh_token } } } -> converted to the 2.x layout
 // Anything else (an empty secret, a paste that isn't the sign-in file) stops the deploy with a plain-English reason.
-// The secret itself is never printed.
+// Then it asks Google whether the sign-in still works (a token refresh — nothing is changed) and, if not, prints
+// Google's own reason in plain English (expired/revoked vs. a Workspace "sign in again every N hours" rule).
+// `--check-only` (the weekly "Check Google sign-in" workflow) does the same without writing the file.
+// The secret itself is never printed; the account is shown masked (h***@example.com).
 'use strict';
 const fs = require('fs');
 const os = require('os');
@@ -56,12 +59,76 @@ function toClasp2(raw) {
   throw new Error('The CLASPRC_JSON secret is not a clasp sign-in file (it has: ' + Object.keys(j).join(', ') + '). ' + REDO);
 }
 
-function main() {
+const RELOGIN = 'Sign in again on your Mac with `npx @google/clasp@2.4.2 login`, then ' + REDO.charAt(0).toLowerCase() + REDO.slice(1);
+
+/** "hayden@pelagic.co" -> "h***@pelagic.co" (enough to tell which account and which company, in a shared log). */
+function maskEmail(email) {
+  const m = /^(.)[^@]*(@.+)$/.exec(String(email || ''));
+  return m ? m[1] + '***' + m[2] : '';
+}
+
+/**
+ * Turns Google's answer to a failed token refresh into a plain-English reason and what to do.
+ * `err` = Google's JSON ({error, error_description, error_subtype}).
+ */
+function explainGoogleError(err) {
+  const code = String((err && err.error) || 'unknown_error');
+  const desc = String((err && err.error_description) || '');
+  const said = 'Google said: ' + code + (desc ? ' — "' + desc + '"' : '') + '.';
+  if (/rapt|reauth/i.test(desc + ' ' + ((err && err.error_subtype) || ''))) {
+    return 'The Google sign-in was cut off by a Google Workspace security rule that makes this account sign in again every so often ' +
+      '("Google Cloud session control"). That is why it keeps expiring. Permanent fix: in the Google Admin console of the account\'s ' +
+      'company, Security → Access and data control → Google Cloud session control → set Reauthentication to "Never require reauthentication" ' +
+      '(or exempt trusted apps and mark "clasp" as Trusted under API controls). Or sign in with an account whose company has no such rule. ' +
+      'Then: ' + RELOGIN + ' ' + said;
+  }
+  if (code === 'invalid_grant') {
+    return 'Google no longer accepts this sign-in (expired or revoked). Usual causes: someone ran `clasp logout`; clasp\'s access was removed ' +
+      '(Google Account → Security → Third-party connections); the account\'s password was changed; or a Workspace admin rule. ' + RELOGIN + ' ' + said;
+  }
+  if (code === 'invalid_client' || code === 'unauthorized_client') {
+    return 'Google does not recognise the app this sign-in was made with (its client was deleted or blocked). ' + RELOGIN + ' ' + said;
+  }
+  return 'Google refused the sign-in. ' + RELOGIN + ' ' + said;
+}
+
+/**
+ * Asks Google to refresh the access token with the saved sign-in (changes nothing). Resolves to
+ * {ok: true, account} or {ok: false, message}; a network problem resolves to {ok: true, warning} (the upload will tell).
+ */
+async function checkWithGoogle(rc, fetchFn) {
+  const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: rc.token.refresh_token,
+    client_id: rc.oauth2ClientSettings.clientId, client_secret: rc.oauth2ClientSettings.clientSecret });
+  let res, j;
+  try {
+    res = await fetchFn('https://oauth2.googleapis.com/token', { method: 'POST', body: body,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+    j = await res.json();
+  } catch (e) {
+    return { ok: true, warning: 'Could not reach Google to check the sign-in (' + e.message + '); carrying on.' };
+  }
+  if (!res.ok || !j || !j.access_token) return { ok: false, message: explainGoogleError(j) };
+  let account = '';
+  try {
+    const info = await (await fetchFn('https://oauth2.googleapis.com/tokeninfo?access_token=' + encodeURIComponent(j.access_token))).json();
+    account = maskEmail(info && info.email);
+  } catch (e) { /* the account name is only a nicety */ }
+  return { ok: true, account: account };
+}
+
+async function main() {
+  const checkOnly = process.argv.indexOf('--check-only') >= 0;
   try {
     const out = toClasp2(process.env.CLASPRC_JSON);
-    const file = path.join(os.homedir(), '.clasprc.json');
-    fs.writeFileSync(file, JSON.stringify(out.rc), { mode: 0o600 });
-    console.log('Google sign-in loaded (' + out.format + ').');
+    const google = await checkWithGoogle(out.rc, fetch);
+    if (!google.ok) throw new Error(google.message);
+    if (google.warning) console.log('::warning::' + google.warning);
+    if (!checkOnly) {
+      const file = path.join(os.homedir(), '.clasprc.json');
+      fs.writeFileSync(file, JSON.stringify(out.rc), { mode: 0o600 });
+    }
+    console.log('Google sign-in ' + (checkOnly ? 'checked' : 'loaded') + ' (' + out.format + ')' +
+      (google.account ? ': Google accepts it, signed in as ' + google.account : google.warning ? '' : ': Google accepts it') + '.');
   } catch (e) {
     console.log('::error::' + e.message);
     process.exit(1);
@@ -69,4 +136,4 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { toClasp2 };
+module.exports = { toClasp2, checkWithGoogle, explainGoogleError, maskEmail };
